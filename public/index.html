@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f4f0e7" />
+  <title>投递领航 · JOB PILOT</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="brand-mark">JP</span><div><strong>投递领航</strong><small>JOB PILOT / 01</small></div></div>
+      <button class="mobile-close" id="closeSidebar" aria-label="关闭菜单">×</button>
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" data-view="desk"><span>⌘</span>投递工作台</button>
+        <button class="nav-item" data-view="resume"><span>▤</span>简历文本</button>
+        <button class="nav-item" data-view="rules"><span>⌁</span>筛选与规则</button>
+        <button class="nav-item" data-view="logs"><span>◌</span>运行日志</button>
+      </nav>
+      <div class="side-note"><span class="eyebrow">EDITOR'S NOTE</span><p>把重复劳动交给流程，把判断留给你。</p><div class="side-dot"><i></i> 本地模式 · 数据由后端提供</div></div>
+      <div class="side-bottom"><button class="quiet-button" id="refreshBtn">↻ 刷新状态</button><span>v0.1 / local</span></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><button class="menu-button" id="openSidebar" aria-label="打开菜单">☰</button><div class="crumb">工作台 <span>/</span> 本地求职编排</div><div class="top-actions"><span class="connection" id="connection"><i></i> 等待连接</span><button class="outline-button" id="loginBtn">连接 BOSS</button><button class="avatar" title="本地档案">JP</button></div></header>
+      <div class="page" id="app">
+        <section class="hero"><div><span class="eyebrow">LOCAL · CAREER WORKSPACE</span><h1>今天，先投给<span>最匹配的机会。</span></h1><p class="hero-copy">让岗位进入视野，让每一次沟通都有记录。</p></div><div class="hero-actions"><button class="primary-button" id="collectBtn">采集新岗位 <b>↗</b></button><button class="text-button" id="importBtn">导入数据</button><input type="file" id="fileInput" accept=".csv,.json,text/csv,application/json" hidden></div></section>
+        <section class="stats-grid" id="statsGrid" aria-label="数据统计"></section>
+        <section class="status-banner" id="statusBanner"><div class="pulse"><i></i></div><div><strong id="automationTitle">托管尚未启动</strong><p id="automationText">默认处于模拟模式，先导入岗位或连接 BOSS，再开始编排。</p></div><button class="small-button" id="runBtn">运行一轮 <span>→</span></button></section>
+        <section class="workspace-grid">
+          <div class="jobs-panel panel"><div class="panel-head"><div><span class="eyebrow">OPPORTUNITY DESK</span><h2>岗位清单 <em id="jobCount">0</em></h2></div><div class="filter-group"><button class="small-button batch-analyze" id="analyzeAllBtn">批量 AI 分析</button><button class="filter active" data-filter="all">全部</button><button class="filter" data-filter="shortlisted">已筛选</button><button class="filter" data-filter="pending">待处理</button></div></div><div id="jobList" class="job-list"></div></div>
+          <aside class="detail-panel panel" id="detailPanel"><div class="panel-head detail-head"><div><span class="eyebrow">READING ROOM</span><h2>岗位详情</h2></div><span class="detail-label" id="detailLabel">未选择</span></div><div id="jobDetail" class="job-detail"></div></aside>
+        </section>
+        <section class="lower-grid"><div class="panel resume-card"><div class="panel-head"><div><span class="eyebrow">PROFILE / RESUME</span><h2>简历文本</h2></div><button class="small-button" id="saveResumeBtn">保存简历</button></div><textarea id="resumeText" placeholder="粘贴你的简历文本，AI 会用它评估岗位匹配度。"></textarea><div class="resume-foot"><span id="resumeMeta">尚未加载档案</span><span>仅保存本机 · 启用 AI 时简历与岗位会发送给所配置服务商</span></div></div><div class="panel automation-card"><div class="panel-head"><div><span class="eyebrow">AUTOMATION CONTROL</span><h2>托管控制</h2></div><span class="mode-chip" id="modeChip">DRY RUN</span></div><div class="rules-fields"><label>职位关键词<input id="ruleTitles" placeholder="AI应用开发工程师, 全栈" /></label><label>城市<input id="ruleCities" value="杭州" placeholder="杭州" /></label><label>优先区域（按顺序）<input id="ruleDistricts" placeholder="余杭, 西湖, 拱墅, 滨江, 萧山" /></label><label>最低薪资（K/月）<input id="ruleMinSalary" type="number" min="0" value="20" placeholder="20" /></label><label>最高薪资（K/月）<input id="ruleMaxSalary" type="number" min="0" value="30" placeholder="30" /></label><label>公司人数下限<input id="ruleCompanyMin" type="number" min="1" placeholder="100" /></label><label>公司人数上限<input id="ruleCompanyMax" type="number" min="1" placeholder="1000" /></label><label>招聘类型<select id="ruleRecruitment"><option value="">不限定</option><option value="social">只看社招</option></select></label><label>最高学历要求<select id="ruleEducation"><option value="">不限定</option><option value="硕士">硕士及以下</option></select></label><label class="wide">技能关键词<input id="ruleSkills" placeholder="Python, React, LLM" /></label><label class="wide">黑名单<input id="ruleBlacklist" placeholder="外包, 培训贷" /></label><label class="wide">招呼语模板（可用 {title} {company}）<textarea id="ruleGreeting" rows="4" placeholder="留空则用默认模板"></textarea></label></div><div class="control-row"><label>运行模式<select id="modeSelect"><option value="dry_run">模拟运行 · dry run</option><option value="live">真实 BOSS · live</option></select></label><label>最低评分<input id="minScore" type="number" min="0" max="100" value="70" /></label></div><div class="control-row"><label>每日上限<input id="dailyLimit" type="number" min="1" max="100" value="10" /></label><label>间隔（秒）<input id="intervalSeconds" type="number" min="10" value="90" /></label></div><div class="automation-foot"><label class="switch-label"><input type="checkbox" id="enabledToggle"><span class="switch"></span><span>启用托管</span></label><label class="switch-label"><input type="checkbox" id="autoApproveToggle"><span class="switch"></span><span>自动审核达标后入队</span></label><label class="switch-label"><input type="checkbox" id="autoCollectToggle"><span class="switch"></span><span>每15分钟尝试采集</span></label><button class="primary-button compact" id="saveRulesBtn">保存设置</button></div><p class="automation-note">真实动作仅使用 BOSS 平台招呼语，不发送 AI 草稿或简历 PDF。</p></div></section>
+        <section class="panel log-panel"><div class="panel-head"><div><span class="eyebrow">RUN LOG / LOCAL</span><h2>最近动态</h2></div><button class="text-button" data-view="logs">查看全部 →</button></div><div id="logList" class="log-list"></div></section>
+      </div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
