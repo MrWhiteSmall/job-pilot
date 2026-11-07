@@ -6,7 +6,7 @@
   const els = {
     app: $('#app'), stats: $('#statsGrid'), jobs: $('#jobList'), detail: $('#jobDetail'), jobCount: $('#jobCount'), logs: $('#logList'),
     toast: $('#toast'), resume: $('#resumeText'), resumeMeta: $('#resumeMeta'), mode: $('#modeSelect'), minScore: $('#minScore'), dailyLimit: $('#dailyLimit'), interval: $('#intervalSeconds'), enabled: $('#enabledToggle'), autoApprove: $('#autoApproveToggle'), autoCollect: $('#autoCollectToggle'), modeChip: $('#modeChip'),
-    title: $('#automationTitle'), autoText: $('#automationText'), banner: $('#statusBanner'), connection: $('#connection')
+    title: $('#automationTitle'), autoText: $('#automationText'), banner: $('#statusBanner'), connection: $('#connection'), pause: $('#pauseBtn')
   };
   const rulesEls = { titles: $('#ruleTitles'), cities: $('#ruleCities'), districts: $('#ruleDistricts'), minSalary: $('#ruleMinSalary'), maxSalary: $('#ruleMaxSalary'), skills: $('#ruleSkills'), blacklist: $('#ruleBlacklist'), companyMin: $('#ruleCompanyMin'), companyMax: $('#ruleCompanyMax'), recruitment: $('#ruleRecruitment'), education: $('#ruleEducation'), greeting: $('#ruleGreeting') };
   function csvList(value) { return Array.isArray(value) ? value.join(', ') : safe(value); }
@@ -76,9 +76,19 @@
   async function approveJob(job) { await runAction(`/api/jobs/${encodeURIComponent(job.id)}/approve`, {}, '已加入审核队列'); }
   async function runAction(path, body, success) { if (state.busy) return; setBusy(true); try { const result = await api(path, { method: 'POST', body: JSON.stringify(body || {}) }); if (path === '/api/profile') state.formDirty = false; toast(result.message || (path === '/api/browser/collect' ? `采集完成：${asArray(result.jobs).length} 个岗位` : success)); await load(); } catch (e) { toast(e.message, true); } finally { setBusy(false); } }
   function renderResume(profile) { const text = safe(first(profile, ['resume_text', 'resumeText', 'text'], '')); if (document.activeElement !== els.resume) els.resume.value = text; els.resumeMeta.textContent = text ? `${text.length} 字符 · 已从后端加载` : '尚未加载档案'; }
-  function renderAutomation(a, rules) { const x = { ...rules, ...a }; els.mode.value = first(x, ['mode'], 'dry_run'); els.modeChip.textContent = els.mode.value === 'live' ? 'LIVE / BOSS' : 'DRY RUN'; els.minScore.value = num(first(x, ['min_score', 'minScore'], 70), 70); els.dailyLimit.value = num(first(x, ['daily_limit', 'dailyLimit'], 10), 10); els.interval.value = num(first(x, ['interval_seconds', 'intervalSeconds'], 90), 90); els.enabled.checked = Boolean(first(x, ['enabled'], false)); els.autoApprove.checked = Boolean(first(x, ['auto_approve', 'autoApprove'], false)); els.autoCollect.checked = Boolean(first(x, ['auto_collect', 'autoCollect'], false)); const live = els.mode.value === 'live'; els.title.textContent = els.enabled.checked ? (live ? '真实托管已启用' : '模拟托管已启用') : '托管尚未启动'; els.autoText.textContent = els.enabled.checked ? (live ? '真实模式：符合条件的岗位会发起 BOSS 平台沟通。' : '模拟模式：只编排动作，不会发起外部沟通。') : '默认处于模拟模式，先导入岗位或连接 BOSS，再开始编排。'; }
+  function renderAutomation(a, rules) { const x = { ...rules, ...a }; els.mode.value = first(x, ['mode'], 'dry_run'); els.modeChip.textContent = els.mode.value === 'live' ? 'LIVE / BOSS' : 'DRY RUN'; els.minScore.value = num(first(x, ['min_score', 'minScore'], 70), 70); els.dailyLimit.value = num(first(x, ['daily_limit', 'dailyLimit'], 10), 10); els.interval.value = num(first(x, ['interval_seconds', 'intervalSeconds'], 90), 90); els.enabled.checked = Boolean(first(x, ['enabled'], false)); els.autoApprove.checked = Boolean(first(x, ['auto_approve', 'autoApprove'], false)); els.autoCollect.checked = Boolean(first(x, ['auto_collect', 'autoCollect'], false)); const live = els.mode.value === 'live'; els.title.textContent = els.enabled.checked ? (live ? '真实托管已启用' : '模拟托管已启用') : '托管尚未启动'; els.autoText.textContent = els.enabled.checked ? (live ? '真实模式：符合条件的岗位会发起 BOSS 平台沟通。' : '模拟模式：只编排动作，不会发起外部沟通。') : '默认处于模拟模式，先导入岗位或连接 BOSS，再开始编排。'; els.pause.textContent = els.enabled.checked ? '立即暂停' : '立即开始'; els.pause.classList.toggle('resume-button', !els.enabled.checked); }
   function renderLogs(logs) { els.logs.replaceChildren(); if (!logs.length) { els.logs.append(make('div', '还没有运行记录。导入或采集后，这里会留下每一步。', 'empty-state')); return; } logs.slice(0, 8).forEach(log => { const row = make('div', undefined, 'log-row'); row.append(make('span', timeLabel(first(log, ['created_at', 'timestamp', 'time'])), 'log-time'), make('span', safe(first(log, ['type', 'level'], 'INFO')).toUpperCase(), 'log-type'), make('span', safe(first(log, ['message', 'text', 'detail'], '')), 'log-message')); els.logs.append(row); }); }
-  function render(data) { state.data = data; state.jobs = data.jobs; if (state.selected) state.selected = state.jobs.find(j => j.id === state.selected.id) || null; renderStats(data); renderJobs(); renderDetail(); renderResume(data.profile); renderRules(data.rules); renderAutomation(data.automation, data.rules); renderLogs(data.logs); els.connection.replaceChildren(make('i'), make('span', '后端已连接')); }
+  function renderAlert(data) {
+    let box = $('#alertBanner');
+    if (!box) { box = make('div'); box.id = 'alertBanner'; box.className = 'alert-banner'; els.banner.insertAdjacentElement('afterend', box); }
+    const alerts = asArray(data.alerts);
+    const paused = !(data.automation && data.automation.enabled);
+    const latest = alerts[0];
+    if (!latest || !paused) { box.style.display = 'none'; box.replaceChildren(); return; }
+    box.style.display = 'flex';
+    box.replaceChildren(make('strong', '需要你处理'), make('span', safe(latest.detail)), make('span', `· ${timeLabel(latest.created_at)}`));
+  }
+  function render(data) { state.data = data; state.jobs = data.jobs; if (state.selected) state.selected = state.jobs.find(j => j.id === state.selected.id) || null; renderStats(data); renderJobs(); renderDetail(); renderResume(data.profile); renderRules(data.rules); renderAutomation(data.automation, data.rules); renderLogs(data.logs); renderAlert(data); els.connection.replaceChildren(make('i'), make('span', '后端已连接')); }
   async function load() { if (state.formDirty) return; try { render(normalizeState(await api('/api/state'))); } catch (e) { els.connection.replaceChildren(make('i'), make('span', '连接失败')); toast(`无法加载状态：${e.message}`, true); } }
   function setBusy(value) { state.busy = value; els.app.classList.toggle('loading', value); }
   async function runOnce() { if (state.busy) return; setBusy(true); try { const result = await api('/api/run', { method: 'POST', body: '{}' }); const status = safe(first(result, ['status'], first(result.data || {}, ['status'], 'unknown'))); toast(`单轮状态：${status}`); await load(); } catch (e) { toast(e.message, true); } finally { setBusy(false); } }
@@ -91,6 +101,30 @@
   $('#importBtn').addEventListener('click', () => $('#fileInput').click()); $('#fileInput').addEventListener('change', async e => { const file = e.target.files[0]; if (!file) return; const text = await file.text(); await importText(text); e.target.value = ''; });
   $('#collectBtn').addEventListener('click', () => runAction('/api/browser/collect', {}, '采集任务已提交')); $('#analyzeAllBtn').addEventListener('click', () => runAction('/api/analyze', {}, '批量分析已提交')); $('#loginBtn').addEventListener('click', () => runAction('/api/browser/login', {}, 'BOSS 登录流程已启动，请查看 Edge')); $('#runBtn').addEventListener('click', runOnce); $('#modeSelect').addEventListener('change', () => { els.modeChip.textContent = els.mode.value === 'live' ? 'LIVE / BOSS' : 'DRY RUN'; });
   $('#saveResumeBtn').addEventListener('click', () => runAction('/api/profile', { resume_text: els.resume.value }, '简历已保存')); $('#saveRulesBtn').addEventListener('click', async () => { const rules = { titles: ruleList(rulesEls.titles.value), cities: ruleList(rulesEls.cities.value), districts: ruleList(rulesEls.districts.value), min_salary: num(rulesEls.minSalary.value, 0), max_salary: num(rulesEls.maxSalary.value, 0), skills: ruleList(rulesEls.skills.value), blacklist: ruleList(rulesEls.blacklist.value), company_min: rulesEls.companyMin.value.trim() ? num(rulesEls.companyMin.value, 0) : null, company_max: rulesEls.companyMax.value.trim() ? num(rulesEls.companyMax.value, 0) : null, recruitment_type: rulesEls.recruitment.value, max_education: rulesEls.education.value, greeting: rulesEls.greeting.value.trim() }; if (state.busy) return; setBusy(true); try { await api('/api/rules', { method: 'POST', body: JSON.stringify(rules) }); await api('/api/automation', { method: 'POST', body: JSON.stringify({ enabled: els.enabled.checked, mode: els.mode.value, daily_limit: num(els.dailyLimit.value, 10), interval_seconds: num(els.interval.value, 90), min_score: num(els.minScore.value, 70), auto_approve: els.autoApprove.checked, auto_collect: els.autoCollect.checked }) }); state.formDirty = false; toast('筛选与托管设置已保存'); await load(); } catch (e) { toast(e.message, true); } finally { setBusy(false); } });
+  /* One-click toggle: the dispatcher checks the flag before every send, so nothing new starts. */
+  $('#pauseBtn').addEventListener('click', async () => {
+    if (state.busy) return;
+    const turningOn = !els.enabled.checked;
+    setBusy(true);
+    try {
+      const base = { ...(state.data && state.data.automation ? state.data.automation : {}) };
+      const payload = {
+        ...base,
+        enabled: turningOn,
+        mode: els.mode.value,
+        daily_limit: num(els.dailyLimit.value, 150),
+        interval_seconds: num(els.interval.value, 70),
+        min_score: num(els.minScore.value, 55),
+        auto_approve: els.autoApprove.checked,
+        auto_collect: els.autoCollect.checked,
+      };
+      await api('/api/automation', { method: 'POST', body: JSON.stringify(payload) });
+      els.enabled.checked = turningOn;
+      state.formDirty = false;
+      toast(turningOn ? '已开启托管：符合条件的岗位会继续派发' : '已暂停托管：正在进行的这一条会走完，之后不再派发');
+      await load();
+    } catch (e) { toast(e.message, true); } finally { setBusy(false); }
+  });
   function selectJob(id) { state.selected = state.jobs.find(j => j.id === id) || null; renderJobs(); renderDetail(); }
   [els.resume, ...Object.values(rulesEls), els.mode, els.minScore, els.dailyLimit, els.interval, els.enabled, els.autoApprove, els.autoCollect].forEach(input => input.addEventListener('input', () => { state.formDirty = true; })); window.setInterval(() => { if (!state.busy) load(); }, 5000);
   load();

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -27,8 +28,8 @@ def bootstrap():
         engine.set_rules({'cities': ['杭州'], 'titles': ['AI应用', '大模型应用', 'Agent', '全栈'], 'min_salary': 20, 'max_salary': 30,
                           'skills': ['Python', 'LangGraph', 'Agent', 'MCP', 'Redis', 'Milvus', 'Elasticsearch'], 'blacklist': []})
     if not engine.get_profile()['updated_at']:
-        path = Path(os.getenv('JOB_PILOT_RESUME', r'D:\DesktopDocuments\【简历】\简历20261105.pdf'))
-        if path.is_file():
+        path = Path(os.getenv('JOB_PILOT_RESUME', '')) if os.getenv('JOB_PILOT_RESUME') else None
+        if path and path.is_file():
             from pypdf import PdfReader
             text = '\n'.join(p.extract_text() or '' for p in PdfReader(path).pages)
             engine.set_profile(text)
@@ -164,12 +165,47 @@ def approve(jid):
 @app.post('/api/automation')
 @safe
 def automation():
-    return result(engine.set_automation(payload()))
+    data = payload()
+    # Turning on live automation is the moment to prove the session is still good:
+    # otherwise the first click silently fails and the queue burns through jobs.
+    turning_on = data.get('enabled') is True and (data.get('mode') or engine.get_automation()['mode']) == 'live'
+    if turning_on:
+        probe = {'logged_in': True, 'challenge': False, 'reason': ''}
+        try:
+            probe = _browser().check_login()
+        except Exception as exc:
+            probe = {'logged_in': False, 'challenge': False, 'reason': f'无法确认登录状态：{exc}'[:200]}
+        if not probe.get('logged_in'):
+            engine.log('login_required', probe.get('reason') or '未登录', None)
+            return jsonify({'error': probe.get('reason') or '未检测到 BOSS 登录态，请先扫码登录', 'login': probe}), 409
+    return result(engine.set_automation(data))
 
 
 def _browser():
     from browser_adapter import browser
     return browser
+
+
+def notify_user(message):
+    """Alert that a human is genuinely needed: log it, beep, and pop a desktop dialog."""
+    engine.log('alert', message[:300])
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_ICONHAND)
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        def popup():
+            try:
+                ctypes.windll.user32.MessageBoxW(0, message[:400], '投递领航：需要你处理', 0x00040000 | 0x00000030)
+            except Exception:
+                pass
+
+        threading.Thread(target=popup, daemon=True).start()
+    except Exception:
+        pass
 
 
 @app.post('/api/browser/login')
@@ -217,7 +253,7 @@ def browser_enrich():
         raise ValidationError('limit 必须是整数') from None
     pending = [j for j in engine.state()['jobs']
                if (not j.get('company_size') or not j.get('salary') or '【列表摘要' in str(j.get('description') or '')) and j.get('status') != 'sent']
-    pending.sort(key=lambda j: (-(j.get('score') or 0), j['id']))
+    pending.sort(key=lambda j: -j['id'])
     targets = [{key: j.get(key, '') for key in ('title', 'company', 'city', 'salary', 'description',
                                                 'url', 'source', 'company_size', 'education',
                                                 'experience', 'recruitment_type')} for j in pending[:max(1, min(limit, 40))]]
@@ -243,6 +279,10 @@ def _auto_approve(cfg):
                 and job['score'] >= cfg['min_score'] and job.get('analysis_source') != 'local_fallback'
                 and job.get('description', '').strip() and '【列表摘要' not in job['description']
                 and not job['approved']):
+            # Same employer, different posting: do not open a second conversation.
+            if engine._company_key(job.get('company')) in engine.contacted_companies():
+                engine.skip(job['id'], '同一公司 30 天内已沟通，跳过重复投递')
+                continue
             engine.approve(job['id'])
 
 
@@ -250,10 +290,10 @@ def _enrich_matches(cfg, limit=8):
     """Read the full posting for near-miss matches so they can be auto-approved."""
     pending = [j for j in engine.state()['jobs']
                if j['status'] in ('matched', 'simulated') and not j['approved']
-               and (j['score'] or 0) >= cfg['min_score']
-               and '【列表摘要' in str(j.get('description') or '')]
+               and ('【列表摘要' in str(j.get('description') or '') or not str(j.get('description') or '').strip())]
     if not pending:
         return 0
+    # Score can only rise once the full JD is in hand, so do not filter by score here.
     pending.sort(key=lambda j: (-(j.get('score') or 0), j['id']))
     targets = [{key: j.get(key, '') for key in ('title', 'company', 'city', 'salary', 'description',
                                                 'url', 'source', 'company_size', 'education',
@@ -317,14 +357,19 @@ def run_once():
         else:
             try:
                 outcome = _browser().submit(item['data'], item['text'])
-            except Exception:
-                outcome = {'status': 'uncertain', 'message': '浏览器执行异常，结果待人工核对，不会自动重试'}
+            except Exception as exc:
+                detail = str(exc)
+                if any(word in detail for word in ('安全验证', '登录', '扫码', '风控', '访问异常', '验证')):
+                    # Treat a platform challenge exactly like a stop, never like a soft miss.
+                    outcome = {'status': 'blocked', 'message': f'平台拦截：{detail[:160]}'}
+                else:
+                    outcome = {'status': 'uncertain', 'message': '浏览器执行异常，结果待人工核对，不会自动重试'}
             if outcome.get('status') not in ('sent', 'blocked', 'uncertain'):
                 outcome = {'status': 'uncertain', 'message': '平台结果无法确认，请人工核对'}
         engine.finish_attempt(item['id'], outcome['status'], outcome.get('message', ''))
         if outcome['status'] == 'sent' and cfg['mode'] == 'live':
             # The click sends BOSS's own stored greeting; this adds our agent-focused note.
-            follow = (engine.get_rules()['data'].get('greeting') or engine.DEFAULT_GREETING).strip()
+            follow = (engine.get_rules()['data'].get('greeting') or '').strip()
             follow = follow.replace('{title}', str(item['data'].get('title') or ''))
             follow = follow.replace('{company}', str(item['data'].get('company') or ''))
             if follow:
@@ -336,6 +381,7 @@ def run_once():
         if outcome['status'] == 'blocked' and any(word in outcome.get('message', '') for word in ('上限', '登录', '验证', '安全')):
             # Only platform-level stops (quota, login, captcha) halt the queue.
             engine.set_automation({'enabled': False})
+            notify_user(f"托管已暂停：{outcome.get('message', '')}。处理完成后点「立即开始」继续。")
         elif outcome['status'] == 'uncertain':
             engine.log('watch', '本条结果待核对，队列继续运行', item['id'])
         return {'status': 'done', 'processed': 1, 'outcomes': [{'job_id': item['id'], **outcome}]}
@@ -345,9 +391,21 @@ def run_once():
 
 def start_worker(stop_event=None):
     stop_event = stop_event if stop_event is not None else threading.Event()
+    cooled_at = 0
+
     def work():
+        nonlocal cooled_at
         while not stop_event.is_set():
             try:
+                count = engine.day_usage('live')
+                cfg_now = engine.get_automation()
+                # Human-like burst pacing: after every 12 real greetings, rest for 5–12 minutes.
+                if (cfg_now['enabled'] and cfg_now['mode'] == 'live' and count and count % 12 == 0
+                        and count != cooled_at):
+                    cooled_at = count
+                    engine.log('cooldown', f'已连续沟通 {count} 次，休息一会儿再继续')
+                    stop_event.wait(random.uniform(300, 720))
+                    continue
                 run_once()
             except sqlite3.OperationalError as exc:
                 if 'locked' in str(exc).lower() or 'busy' in str(exc).lower():
@@ -361,7 +419,8 @@ def start_worker(stop_event=None):
                 app.logger.exception('worker failed')
                 engine.set_automation({'enabled': False})
                 engine.log('worker_error', '托管异常，已暂停，请检查终端')
-            stop_event.wait(2)
+            # Jittered gap so the cadence never looks like a metronome.
+            stop_event.wait(2 + random.uniform(0, 16))
     thread = threading.Thread(target=work, name='job-pilot-worker', daemon=True)
     thread.start()
     return thread
@@ -375,4 +434,4 @@ def run():
 
 if __name__ == '__main__':
     start_worker()
-    app.run(host='127.0.0.1', port=8765, debug=False, use_reloader=False)
+    app.run(host='127.0.0.1', port=int(os.getenv('JOB_PILOT_PORT', '8765')), debug=False, use_reloader=False)

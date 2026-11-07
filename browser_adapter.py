@@ -61,7 +61,9 @@ class BossBrowser:
         subprocess.Popen([str(browser_path), '--user-data-dir=' + str(profile),
                           '--remote-debugging-port=' + str(port),
                           '--remote-debugging-address=127.0.0.1',
-                          '--disable-blink-features=AutomationControlled',
+                          # No --disable-blink-features here: Chrome shows an "unsupported flag"
+                          # infobar for it, which is a louder automation signal than the flag hides.
+                          # navigator.webdriver is masked by MASK_SCRIPT instead.
                           '--no-first-run', '--no-default-browser-check',
                           '--new-window', url],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -175,7 +177,32 @@ class BossBrowser:
         text = page.locator('body').inner_text(timeout=10000)
         if any(x in text for x in ['访问异常', '安全验证', '请完成验证', '滑动验证', '行为验证', '您的访问行为异常']):
             raise RuntimeError('BOSS 要求安全验证，请到浏览器手动完成，程序不会绕过验证。')
+        if '扫码登录' in text or ('登录/注册' in text and '消息' not in text and '简历' not in text):
+            raise RuntimeError('BOSS 登录已失效，请重新扫码登录后再继续托管。')
         return text
+
+    def check_login(self):
+        """Cheap pre-flight: is the dedicated Chrome still signed in to BOSS?"""
+        return self._call(self._check_login)
+
+    def _check_login(self):
+        context = self._context()
+        page = self._new_page()
+        try:
+            self._goto(page, 'https://www.zhipin.com/web/geek/jobs?city=101210100&query=AI', timeout=30000)
+            page.wait_for_timeout(1500)
+            text = page.locator('body').inner_text(timeout=10000)
+            if any(x in text for x in ['访问异常', '安全验证', '请完成验证', '滑动验证', '行为验证', '您的访问行为异常']):
+                return {'logged_in': False, 'challenge': True, 'url': page.url,
+                        'reason': 'BOSS 当前要求安全验证，请到浏览器手动完成'}
+            logged_in = not ('扫码登录' in text or ('登录/注册' in text and '消息' not in text))
+            return {'logged_in': logged_in, 'challenge': False, 'url': page.url,
+                    'reason': '' if logged_in else '未检测到登录态，请先在投递用的 Chrome 窗口扫码登录'}
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
 
     def login(self):
         return self._call(self._login)
@@ -186,6 +213,13 @@ class BossBrowser:
         existing = self._discover_endpoint()
         if existing:
             self.edge_endpoint = existing
+            try:
+                context = self._context()
+                page = context.pages[0] if context.pages else self._new_page()
+                page.bring_to_front()
+                self._goto(page, 'https://www.zhipin.com/web/user/?ka=header-login', timeout=30000)
+            except Exception:
+                pass
             return {'status': 'opened', 'message': '已复用现有的求职 Chrome 窗口（保留当前登录）。若尚未登录，请在该窗口扫码，然后点击采集。'}
         self._launch_edge('https://www.zhipin.com/web/user/?ka=header-login')
         return {'status': 'opened', 'message': '已打开本机 Chrome 专用登录窗口。扫码成功后直接点击采集，无需手动关闭窗口，程序会复用同一会话。'}
@@ -232,13 +266,25 @@ class BossBrowser:
                 cities = [cities]
             if '杭州' not in cities:
                 raise RuntimeError('当前 BOSS 采集器配置为杭州；其他城市请先导入岗位，或扩展城市编码。')
-            # Server-side filters cut the noise (outsourcing shops, tiny teams, senior-only).
-            # Codes follow BOSS's own filter vocabulary; an empty result falls back to unfiltered.
+            # Server-side filters cut the noise (tiny teams, campus, senior-only).
+            # Salary is deliberately NOT filtered here: BOSS's band is coarse, and the local
+            # rule (starting salary 20-30K) already decides. An empty result retries unfiltered.
             filters = [('scale', '303,304'), ('experience', '104,105,106'),
-                       ('degree', '204,205,206'), ('salary', '406')]
-            plans = [filters, []]
+                       ('degree', '204,205,206')]
+            self._collect_round = getattr(self, '_collect_round', 0) + 1
+            plans = [filters] if self._collect_round % 2 == 0 else [[]]
+            # Rotate the keyword list between runs so repeated collections cover new ground
+            # instead of re-reading the same first six queries.
+            offset = (self._collect_round * 3) % max(1, len(titles))
+            titles = titles[offset:] + titles[:offset]
+            visits = 0
             for active in plans:
-                for query, page_no in [(q, n) for q in titles[:6] for n in (1, 3)]:
+                if jobs:
+                    break
+                for query, page_no in [(q, n) for q in titles[:10] for n in (1, 2)]:
+                    if visits >= 12:
+                        break
+                    visits += 1
                     page.bring_to_front()
                     params = {'city': '101210100', 'query': query}
                     if active:
@@ -267,7 +313,9 @@ class BossBrowser:
                         const education = tags.find(t => /^(学历不限|博士|硕士|本科|大专|高中|中专|初中)/.test(t)) || (tags[1] === '不限' ? '不限' : '');
                         const experience = tags.find(t => /经验|年|在校|应届|实习/.test(t)) || '';
                         const hiringText = (get('.job-name') + ' ' + experience);
-                        const recruitment = /实习/.test(hiringText) ? 'internship' : /应届|在校|校招|校园/.test(hiringText) ? 'campus' : /经验不限|年|社招/.test(hiringText) ? 'social' : '';
+                        const softFresh = /(接受|欢迎|允许|不限|均可)\\s*应届/.test(hiringText);
+                        const hiringText2 = softFresh ? hiringText.replace(/(接受|欢迎|允许|不限|均可)\\s*应届/g, '') : hiringText;
+                        const recruitment = /实习/.test(hiringText2) ? 'internship' : /应届|在校|校招|校园/.test(hiringText2) ? 'campus' : /经验不限|年|社招/.test(hiringText2) ? 'social' : '';
                         const size = c.innerText.match(/(?:\\d[\\d,]*\\s*[-–~至]\\s*\\d[\\d,]*|\\d[\\d,]*以上)\\s*人/);
                         return {education, experience, recruitment_type:recruitment, company_size:size?.[0] || '', title:get('.job-name') || a?.textContent?.trim() || '',
                             company:get('.company-name') || get('.boss-name'),
@@ -371,12 +419,12 @@ class BossBrowser:
         if not item.get('salary'):
             # The list card draws salary with a private-use font; the detail header
             # sometimes carries the same figure as plain text.
-            for selector in ('.job-banner .salary', '.job-primary .salary', '.job-info .salary'):
+            for selector in ('.job-banner .salary', '.job-primary .salary', '.job-info .salary', '.job-detail .salary', '.salary'):
                 block = page.locator(selector).first
                 if not block.count():
                     continue
                 value = block.inner_text().strip()
-                if value and not re.search('[\ue000-\uf8ff]', value):
+                if value and not re.search('[\ue000-\uf8ff]', value) and re.fullmatch(r'\d{1,3}\s*[-–~]\s*\d{1,3}K(?:·\d{1,2}薪)?|面议', value):
                     item['salary'] = value
                     break
         if not item.get('company_size'):

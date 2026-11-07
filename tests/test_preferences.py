@@ -91,3 +91,15 @@ def test_non_engineering_titles_are_excluded(tmp_path):
     rules = e.get_rules()['data']
     assert e.match_job(base(title='AI Agent平台产品经理'), '', rules)[0] == -1
     assert e.match_job(base(title='Agent研发工程师'), '', rules)[0] >= 0
+
+
+def test_salary_range_only_needs_an_intersection(tmp_path):
+    e = make(tmp_path)
+    e.set_rules({'min_salary': 20, 'max_salary': 30, 'titles': ['AI', 'Agent']})
+    rules = e.get_rules()['data']
+    for salary in ('18-30K', '18-25K', '15-24K', '20-30K', '30-45K', '25K', '30-60K'):
+        assert e.match_job(base(title='AI Agent工程师', salary=salary), '', rules)[0] >= 0, salary
+    for salary in ('8-12K', '35-60K', '15-19K', '40-70K'):
+        score, reason = e.match_job(base(title='AI Agent工程师', salary=salary), '', rules)
+        assert score == -1 and '薪资区间' in reason, salary
+

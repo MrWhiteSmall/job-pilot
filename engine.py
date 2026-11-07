@@ -79,6 +79,8 @@ class JobEngine:
                     db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}')
             # An interrupted live attempt may already have reached the platform.
             db.execute("UPDATE jobs SET status='uncertain' WHERE id IN (SELECT job_id FROM attempts WHERE mode='live' AND outcome='pending')")
+            db.execute("UPDATE attempts SET outcome='uncertain', detail=COALESCE(detail,'') || '（进程中断，结果待人工核对，不会自动重试）' "
+                       "WHERE mode='live' AND outcome='pending'")
 
     def _one(self, sql, args=()):
         with self._connect() as db:
@@ -229,7 +231,7 @@ class JobEngine:
                     existing = db.execute('SELECT id,data,status FROM jobs WHERE external_id=?', (ext,)).fetchone()
                     old_data = self._json(existing['data']) if existing else {}
                     changed = False
-                    for key in ('company_size', 'education', 'experience', 'recruitment_type'):
+                    for key in ('salary', 'city', 'company_size', 'education', 'experience', 'recruitment_type'):
                         if job.get(key) and not old_data.get(key):
                             old_data[key] = job[key]
                             changed = True
@@ -303,8 +305,11 @@ class JobEngine:
     def _social_job(job):
         evidence = ' '.join(str(job.get(k, '')) for k in ('title', 'experience')).lower()
         description = str(job.get('description', '')).lower()
-        if (any(x in evidence for x in ('校园', '校招', '应届', '在校', '实习', 'campus', 'internship'))
-                or re.search(r'(?:面向|仅限|招聘|招募|要求).{0,12}(?:应届|在校|校招|校园招聘|实习生)', description)):
+        description = re.sub(r'(接受|欢迎|允许|不限|均可)\s*应届生?', '', description)
+        # "接受应届 / 欢迎应届 / 应届也可" still hires experienced people; only campus-only wording blocks.
+        evidence = re.sub(r'(接受|欢迎|允许|可|不限|均可|也能|也要)\s*应届生?', '', evidence)
+        if (any(x in evidence for x in ('校园', '校招', '应届', '在校', '实习', '兼职', '临时', 'campus', 'internship'))
+                or re.search(r'(?:面向|仅限|招聘|招募|要求|工作周期).{0,12}(?:应届|在校|校招|校园招聘|实习生|兼职|临时)', description)):
             return False
         kind = str(job.get('recruitment_type', '')).strip().lower()
         if kind in ('social', '社招', '社会招聘', '社会招募'):
@@ -338,7 +343,9 @@ class JobEngine:
     def match_job(job, resume, rules):
         title = str(job.get('title', job.get('position', ''))).lower()
         city = str(job.get('city', job.get('location', ''))).lower()
-        text = ' '.join(str(job.get(k, '')) for k in ('title', 'description', 'company', 'city')).lower()
+        # Stack mentions in a JD (阿里云/腾讯云…) must not count as working for them.
+        text = ' '.join(str(job.get(k, '')) for k in ('title', 'company')).lower()
+        full_text = ' '.join(str(job.get(k, '')) for k in ('title', 'description', 'company', 'city')).lower()
         notes = []
         if 'company_min' in rules or 'company_max' in rules:
             band = JobEngine._company_band(job.get('company_size'))
@@ -370,7 +377,10 @@ class JobEngine:
         outsourced = JobEngine._outsourced(job)
         if outsourced:
             return -1, outsourced
-        if rules.get('titles') and not any(x.lower() in title for x in rules['titles']):
+        # BOSS titles vary in spacing ("AI 应用开发" vs "AI应用开发"), so compare without blanks.
+        title_compact = re.sub(r'[\s\u3000]+', '', title)
+        if rules.get('titles') and not any(
+                re.sub(r'[\s\u3000]+', '', str(x).lower()) in title_compact for x in rules['titles']):
             return -1, '职位不符合规则'
         if any(x.lower() in title for x in rules.get('exclude_titles', [])):
             return -1, '职位方向不符（非研发岗）'
@@ -381,14 +391,19 @@ class JobEngine:
         salary_unknown = not nums or '面议' in salary or any(x in salary for x in ('天', '时', '年', '万'))
         if not salary_unknown:
             low = float(nums[0])
+            high = float(nums[-1]) if len(nums) > 1 else low
             if low >= 1000 and not re.search('[kK]', salary):
                 low /= 1000
-            if low < float(rules.get('min_salary', 0)):
-                return -1, '薪资低于下限'
-            if rules.get('max_salary') and low > float(rules['max_salary']):
-                return -1, '薪资范围超过目标区间'
+                high = max(low, high / 1000)
+            floor = float(rules.get('min_salary', 0) or 0)
+            cap = float(rules.get('max_salary', 0) or 0)
+            # Ranges only need to overlap the wanted band: 18-30K overlaps 20-30K, 35-60K does not.
+            if cap and low > cap:
+                return -1, f'薪资区间 {low:g}-{high:g}K 高于 {cap:g}K'
+            if floor and high < floor:
+                return -1, f'薪资区间 {low:g}-{high:g}K 低于 {floor:g}K'
         skills = [s for s in rules.get('skills', []) if s.lower() in resume.lower()]
-        found = [s for s in skills if s.lower() in text]
+        found = [s for s in skills if s.lower() in full_text]
         score = round(min(100, 40 + 60 * len(found) / max(1, min(4, len(skills)))), 1) if resume.strip() else 0
         reason = '匹配技能：' + '、'.join(found) if found else '硬条件通过，技能证据不足，请核对完整 JD'
         if '【列表摘要' in str(job.get('description', '')):
@@ -500,9 +515,33 @@ class JobEngine:
         with self._connect() as db:
             rows = [dict(r) | {'data': self._json(r['data']), 'approved': bool(r['approved'])} for r in db.execute(sql, args)]
         rules = self.get_rules()['data']
+        # Never open a second conversation with a company we already greeted recently,
+        # even when it publishes a different posting with a different URL.
+        contacted = self.contacted_companies()
+        rows = [r for r in rows if self._company_key(r['data'].get('company')) not in contacted]
         # Prefer the user's district order first, then the best score.
         rows.sort(key=lambda j: (self.district_rank(j, rules), -float(j['score'] or 0), j['id']))
         return rows
+
+    @staticmethod
+    def _company_key(name):
+        return re.sub(r'[\s\u3000]+', '', str(name or ''))
+
+    def contacted_companies(self, within_days=30):
+        """Companies already greeted for real inside the window, keyed by normalised name."""
+        cutoff = (datetime.now(SHANGHAI) - timedelta(days=within_days)).astimezone(timezone.utc).isoformat()
+        with self._connect() as db:
+            rows = db.execute("SELECT j.data FROM attempts a JOIN jobs j ON j.id=a.job_id "
+                              "WHERE a.mode='live' AND a.outcome IN ('sent','uncertain','blocked') "
+                              "AND a.created_at>=?", (cutoff,)).fetchall()
+        return {self._company_key(self._json(r['data']).get('company')) for r in rows} - {''}
+
+    def skip(self, jid, reason):
+        """Park a job that should not be queued, keeping the reason visible on the board."""
+        with self._connect() as db:
+            db.execute("UPDATE jobs SET status='rejected', reason=?, updated_at=? WHERE id=?", (reason, now(), jid))
+        self.log('skipped', reason, jid)
+        return {'job_id': jid, 'skipped': True}
 
     def record_attempt(self, jid, mode, outcome, detail=''):
         with self._connect() as db:
@@ -534,7 +573,9 @@ class JobEngine:
             jobs = [self._job(r[0]) for r in db.execute('SELECT id FROM jobs ORDER BY id DESC')]
             logs = [dict(r) for r in db.execute('SELECT * FROM logs ORDER BY id DESC LIMIT 200')]
         cfg = self.get_automation()
-        return {'profile': self.get_profile(), 'rules': self.get_rules()['data'], 'jobs': jobs, 'logs': logs, 'automation': cfg,
+        alerts = [row for row in logs if row['event'] in ('alert', 'login_required')][:3]
+        return {'profile': self.get_profile(), 'rules': self.get_rules()['data'], 'jobs': jobs, 'logs': logs,
+                'automation': cfg, 'alerts': alerts,
                 'stats': {'jobs': len(jobs), 'pending': sum(j['status'] == 'new' for j in jobs), 'shortlisted': sum(j['approved'] and j['status'] not in TERMINAL for j in jobs),
                           'sent': sum(j['status'] == 'sent' for j in jobs), 'today_remaining': max(0, cfg['daily_limit'] - self.day_usage(cfg['mode'])), 'daily_limit': cfg['daily_limit'],
                           'attempts': self._one('SELECT count(*) FROM attempts')[0]}}
