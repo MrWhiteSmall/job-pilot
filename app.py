@@ -363,6 +363,16 @@ def _auto_approve(cfg):
 _salary_hold = set()
 
 
+def _salary_of(job):
+    """engine.state()/queue() 的行带 data，engine._job() 是扁平结构，两种都要能读。"""
+    if not job:
+        return ''
+    data = job.get('data')
+    if isinstance(data, dict):
+        return str(data.get('salary') or '').strip()
+    return str(job.get('salary') or '').strip()
+
+
 def _ensure_facts(job):
     """发送前把详情再读一次：薪资/规模/完整 JD 都靠这一页。
 
@@ -372,6 +382,7 @@ def _ensure_facts(job):
     target = {key: data.get(key, '') for key in (
         'title', 'company', 'city', 'salary', 'description', 'url', 'source',
         'company_size', 'education', 'experience', 'recruitment_type')}
+    target['external_id'] = job.get('external_id') or data.get('external_id') or ''
     try:
         done = _browser().enrich([target], 1)
         engine.import_jobs([j for j in done if not j.get('error')])
@@ -391,7 +402,7 @@ def _enrich_matches(cfg, limit=8):
         return 0
     # Score can only rise once the full JD is in hand, so do not filter by score here.
     pending.sort(key=lambda j: (-(j.get('score') or 0), j['id']))
-    targets = [{key: j.get(key, '') for key in ('title', 'company', 'city', 'salary', 'description',
+    targets = [{key: j.get(key, '') for key in ('external_id', 'title', 'company', 'city', 'salary', 'description',
                                                 'url', 'source', 'company_size', 'education',
                                                 'experience', 'recruitment_type')} for j in pending[:limit]]
     try:
@@ -438,12 +449,27 @@ def run_once():
             for candidate in queue[:3]:
                 if candidate['id'] in _salary_hold:
                     continue
-                if str((candidate.get('data') or {}).get('salary') or '').strip():
+                if _salary_of(candidate):
                     item = candidate
                     break
                 fresh = _ensure_facts(candidate)
-                if str(((fresh.get('data') or {})).get('salary') or '').strip():
-                    item = fresh
+                if _salary_of(fresh):
+                    data = dict(candidate.get('data') or {})
+                    for key in ('title', 'company', 'city', 'salary', 'description', 'url', 'source',
+                                'company_size', 'education', 'experience', 'recruitment_type',
+                                'financing', 'company_type'):
+                        value = fresh.get(key)
+                        if value not in (None, ''):
+                            data[key] = value
+                    item = dict(candidate)
+                    item['data'] = data
+                    # 补全事实会撤销原审核，这里立即重算一次并重新入队，避免空转一轮。
+                    engine.analyze(jid=item['id'])
+                    refreshed = engine._job(item['id']) or {}
+                    if (refreshed.get('score') or 0) >= cfg['min_score'] and \
+                            engine.match_job(data, engine.get_profile()['resume_text'],
+                                             engine.get_rules()['data'])[0] >= 0:
+                        engine.approve(item['id'])
                     break
                 _salary_hold.add(candidate['id'])
                 engine.log('enrich_hold', '薪资仍无法确认，暂缓该岗位，先投下一条', candidate['id'])
