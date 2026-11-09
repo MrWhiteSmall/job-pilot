@@ -140,3 +140,20 @@ def test_salary_range_only_needs_an_intersection(tmp_path):
         score, reason = e.match_job(base(title='AI Agent工程师', salary=salary), '', rules)
         assert score == -1 and '薪资区间' in reason, salary
 
+
+
+
+def test_python_backend_allowed_and_algorithm_roles_excluded(tmp_path):
+    e = make(tmp_path)
+    e.set_rules({
+        'min_salary': 20, 'max_salary': 30,
+        'titles': ['AI应用', 'Agent', '全栈', 'Python', '后端'],
+        'exclude_titles': ['算法', '视觉', '图像', 'SLAM', '定位', '导航', '运动控制',
+                           '强化学习', '仿真', '几何', '感知', '深度学习', '机器学习',
+                           '具身', '机器人'],
+    })
+    rules = e.get_rules()['data']
+    ok = e.match_job(base(title='Python 后端开发工程师', salary='20-30K'), 'Python 后端', rules)
+    assert ok[0] >= 0, ok
+    bad = e.match_job(base(title='AI应用算法工程师', salary='20-30K'), 'Python AI应用', rules)
+    assert bad[0] == -1 and '非研发岗' in bad[1], bad

@@ -360,6 +360,28 @@ def _auto_approve(cfg):
             engine.approve(job['id'])
 
 
+_salary_hold = set()
+
+
+def _ensure_facts(job):
+    """发送前把详情再读一次：薪资/规模/完整 JD 都靠这一页。
+
+    返回刷新后的 job dict；读不到薪资也照样返回，由调用方决定是否暂缓。
+    """
+    data = job.get('data') or {}
+    target = {key: data.get(key, '') for key in (
+        'title', 'company', 'city', 'salary', 'description', 'url', 'source',
+        'company_size', 'education', 'experience', 'recruitment_type')}
+    try:
+        done = _browser().enrich([target], 1)
+        engine.import_jobs([j for j in done if not j.get('error')])
+        engine.log('enrich', f'发送前补全岗位详情：{data.get("title", "")[:24]}', job['id'])
+    except Exception as exc:
+        engine.log('enrich_failed', str(exc)[:200], job['id'])
+    fresh = engine._job(job['id'])
+    return fresh or job
+
+
 def _enrich_matches(cfg, limit=8):
     """Read the full posting for near-miss matches so they can be auto-approved."""
     pending = [j for j in engine.state()['jobs']
@@ -410,7 +432,25 @@ def run_once():
         queue = engine.queue(cfg['min_score'], cfg['mode'])
         if not queue:
             return {'status': 'idle', 'processed': 0}
-        item = queue[0]
+        # live 模式下不发「薪资不知道」的岗位：先补一次详情，补不到就本轮暂缓。
+        item = None
+        if cfg['mode'] != 'dry_run':
+            for candidate in queue[:3]:
+                if candidate['id'] in _salary_hold:
+                    continue
+                if str((candidate.get('data') or {}).get('salary') or '').strip():
+                    item = candidate
+                    break
+                fresh = _ensure_facts(candidate)
+                if str(((fresh.get('data') or {})).get('salary') or '').strip():
+                    item = fresh
+                    break
+                _salary_hold.add(candidate['id'])
+                engine.log('enrich_hold', '薪资仍无法确认，暂缓该岗位，先投下一条', candidate['id'])
+        else:
+            item = queue[0]
+        if item is None:
+            return {'status': 'needs_salary', 'processed': 0}
         # Serialize reservation with settings edits, and recheck immediately before dispatch.
         with engine._lock:
             current = engine.get_automation()
