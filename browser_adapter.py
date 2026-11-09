@@ -304,7 +304,7 @@ class BossBrowser:
                 if jobs:
                     break
                 for city_code, query, page_no in [(c, q, n) for q in titles[:10] for n in (1, 2) for c in codes]:
-                    if visits >= 12:
+                    if visits >= 8:
                         break
                     visits += 1
                     page.bring_to_front()

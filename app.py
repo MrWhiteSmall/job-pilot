@@ -393,7 +393,7 @@ def _ensure_facts(job):
     return fresh or job
 
 
-def _enrich_matches(cfg, limit=8):
+def _enrich_matches(cfg, limit=5):
     """Read the full posting for near-miss matches so they can be auto-approved."""
     pending = [j for j in engine.state()['jobs']
                if j['status'] in ('matched', 'simulated') and not j['approved']
@@ -428,7 +428,7 @@ def run_once():
         last = engine.last_attempt(cfg['mode'])
         if last and (datetime.now(timezone.utc) - datetime.fromisoformat(last['created_at'])).total_seconds() < cfg['interval_seconds']:
             return {'status': 'interval', 'processed': 0}
-        if cfg['auto_collect'] and time.monotonic() - _last_collect >= 600:
+        if cfg['auto_collect'] and time.monotonic() - _last_collect >= 1200:
             _last_collect = time.monotonic()
             try:
                 engine.import_jobs(_browser().collect(engine.get_rules()['data']))
@@ -544,12 +544,12 @@ def start_worker(stop_event=None):
             try:
                 count = engine.day_usage('live')
                 cfg_now = engine.get_automation()
-                # Human-like burst pacing: after every 12 real greetings, rest for 5–12 minutes.
-                if (cfg_now['enabled'] and cfg_now['mode'] == 'live' and count and count % 12 == 0
+                # Human-like burst pacing: after every 18 real greetings, rest for 4–7 minutes.
+                if (cfg_now['enabled'] and cfg_now['mode'] == 'live' and count and count % 18 == 0
                         and count != cooled_at):
                     cooled_at = count
                     engine.log('cooldown', f'已连续沟通 {count} 次，休息一会儿再继续')
-                    stop_event.wait(random.uniform(300, 720))
+                    stop_event.wait(random.uniform(240, 420))
                     continue
                 run_once()
             except sqlite3.OperationalError as exc:
