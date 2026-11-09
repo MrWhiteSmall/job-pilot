@@ -12,6 +12,22 @@ import time
 
 ROOT = Path(__file__).resolve().parent
 
+# BOSS 直聘的城市编码（采集用）。要加城市就在这里补一行，规则里的 cities 用中文名。
+CITY_CODES = {
+    '杭州': '101210100',
+    '上海': '101020100',
+    '北京': '101010100',
+    '深圳': '101280600',
+    '广州': '101280100',
+    '南京': '101190100',
+    '苏州': '101190400',
+    '成都': '101270100',
+    '武汉': '101200100',
+    '西安': '101110100',
+    '合肥': '101220100',
+    '宁波': '101210400',
+}
+
 MASK_SCRIPT = """
 (() => {
   const noop = () => {};
@@ -265,12 +281,13 @@ class BossBrowser:
             titles = rules.get('collect_titles') or rules.get('titles') or rules.get('keywords') or ['AI应用开发工程师', '全栈工程师']
             if isinstance(titles, str):
                 titles = [x.strip() for x in re.split('[,，\n]', titles) if x.strip()]
-            # City is intentionally explicit. Other cities require extending the city-code map.
+            # BOSS city codes: rules['cities'] is Chinese names, collection needs the numeric code.
             cities = rules.get('cities') or ['杭州']
             if isinstance(cities, str):
                 cities = [cities]
-            if '杭州' not in cities:
-                raise RuntimeError('当前 BOSS 采集器配置为杭州；其他城市请先导入岗位，或扩展城市编码。')
+            codes = [CITY_CODES[c] for c in cities if c in CITY_CODES]
+            if not codes:
+                raise RuntimeError(f'采集器暂不支持这些城市：{cities}。可用城市：{"、".join(CITY_CODES)}')
             # Server-side filters cut the noise (tiny teams, campus, senior-only).
             # Salary is deliberately NOT filtered here: BOSS's band is coarse, and the local
             # rule (starting salary 20-30K) already decides. An empty result retries unfiltered.
@@ -286,12 +303,12 @@ class BossBrowser:
             for active in plans:
                 if jobs:
                     break
-                for query, page_no in [(q, n) for q in titles[:10] for n in (1, 2)]:
+                for city_code, query, page_no in [(c, q, n) for q in titles[:10] for n in (1, 2) for c in codes]:
                     if visits >= 12:
                         break
                     visits += 1
                     page.bring_to_front()
-                    params = {'city': '101210100', 'query': query}
+                    params = {'city': city_code, 'query': query}
                     if active:
                         params.update(dict(active))
                     if page_no > 1:

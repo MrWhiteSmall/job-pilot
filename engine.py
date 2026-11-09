@@ -16,6 +16,58 @@ from urllib.parse import urlsplit, urlunsplit
 SHANGHAI = timezone(timedelta(hours=8))
 TERMINAL = {'sent', 'blocked', 'uncertain', 'pending'}
 
+# 千人以上公司只准入外资/外企：BOSS 岗位页不显示企业性质，用常见外企名单兜底。
+# 命中规则是「公司名包含其中任意一项」，所以只放品牌词，不放「中国」「国际」这类泛词。
+DEFAULT_FOREIGN_WHITELIST = [
+    # 美资科技/软件
+    '微软', 'microsoft', '亚马逊', 'amazon', '谷歌', 'google', '苹果公司', 'apple',
+    '甲骨文', 'oracle', '思科', 'cisco', 'ibm', '英特尔', 'intel', '英伟达', 'nvidia',
+    'amd', '高通', 'qualcomm', '德州仪器', '应用材料', 'asml', '赛默飞', 'thermo fisher',
+    '安捷伦', 'agilent', '丹纳赫', 'danaher', '帕兰提尔', 'palantir', 'zoom',
+    # 欧资工业/制造
+    '西门子', 'siemens', '博世', 'bosch', '大陆集团', 'continental', '采埃孚', 'zf',
+    '舍弗勒', 'schaeffler', '米其林', 'michelin', '施耐德', 'schneider', 'abb',
+    '霍尼韦尔', 'honeywell', '飞利浦', 'philips', '通用电气', 'ge医疗', '3m中国',
+    '杜邦', 'dupont', '陶氏', 'dow', '巴斯夫', 'basf', '拜耳', 'bayer', '赢创', 'evonik',
+    '汉高', 'henkel', '蔡司', 'zeiss', '通快', 'trumpf', '库卡', 'kuka', '发那科', 'fanuc',
+    '安川', 'yaskawa', '欧姆龙', 'omron', '基恩士', 'keyence', '罗克韦尔', 'rockwell',
+    '艾默生', 'emerson', '江森自控', 'johnson controls', '开利', 'carrier',
+    '奥的斯', 'otis', '蒂森克虏伯', 'thyssenkrupp', '迅达', 'schindler', '通力', 'kone',
+    '沃尔沃', 'volvo', '佛吉亚', 'faurecia', '安波福', 'aptiv', '法雷奥', 'valeo',
+    # 医药/化工/消费品
+    '默克', 'merck', '辉瑞', 'pfizer', '罗氏', 'roche', '诺华', 'novartis',
+    '赛诺菲', 'sanofi', '阿斯利康', 'astrazeneca', '葛兰素史克', 'gsk', '葛兰素',
+    '强生', 'johnson & johnson', '礼来', 'lilly', '诺和诺德', 'novo nordisk',
+    '雅培', 'abbott', '美敦力', 'medtronic', '波士顿科学', '史赛克', 'stryker',
+    '雀巢', 'nestle', '联合利华', 'unilever', '宝洁', 'procter', '可口可乐', 'coca-cola',
+    '百事', 'pepsico', '麦当劳', 'mcdonald', '星巴克', 'starbucks', '宜家', 'ikea',
+    '耐克', 'nike', '阿迪达斯', 'adidas', '欧莱雅', "l'oreal", '资生堂', 'shiseido',
+    '迪卡侬', 'decathlon', '达能', 'danone', '亿滋', 'mondelez', '玛氏', 'mars',
+    '费列罗', 'ferrero', '金佰利', 'kimberly', '高露洁', 'colgate', '喜力', 'heineken',
+    '嘉士伯', 'carlsberg', '雅诗兰黛', 'estee lauder', 'lvmh', '开云', 'kering',
+    # 汽车/新能源
+    '特斯拉', 'tesla', '大众汽车', 'volkswagen', '上汽大众', '一汽大众',
+    '宝马', 'bmw', '奔驰', 'mercedes', '奥迪', 'audi', '丰田', 'toyota',
+    '本田', 'honda', '日产汽车', 'nissan', '现代汽车', 'hyundai', '起亚', 'kia',
+    # 日韩电子
+    '松下', 'panasonic', '索尼', 'sony', '佳能', 'canon', '尼康', 'nikon',
+    '三星', 'samsung', 'lg电子', '富士通', 'fujitsu', 'nec', '日立', 'hitachi',
+    '东芝', 'toshiba', '村田', 'murata', 'tdk', '爱普生', 'epson', '岛津', 'shimadzu',
+    # 通信/金融/咨询
+    '爱立信', 'ericsson', '诺基亚', 'nokia', '汇丰', 'hsbc', '渣打', 'standard chartered',
+    '花旗', 'citi', '摩根大通', 'jpmorgan', '摩根士丹利', 'morgan stanley',
+    '高盛', 'goldman', '瑞银', 'ubs', '安联', 'allianz', '安盛', 'axa', '友邦', 'aia',
+    '麦肯锡', 'mckinsey', '波士顿咨询', 'bcg', '贝恩', 'bain', '罗兰贝格', 'roland berger',
+    '德勤', 'deloitte', '普华永道', 'pwc', '安永', 'ernst & young', '毕马威', 'kpmg',
+    '埃森哲', 'accenture', '凯捷', 'capgemini', '印孚瑟斯', 'infosys', '塔塔咨询', 'tata',
+    '索迪斯', 'sodexo', '仲量联行', 'jll', '世邦魏理仕', 'cbre', '戴德梁行', 'cushman',
+    '联邦快递', 'fedex', 'dhl', '马士基', 'maersk',
+    # 亚太外企（上海/杭州常见）
+    'coupang', 'grab', 'shopee', 'lazada', 'sea group', 'booking', 'agoda',
+    '野村', 'nomura', '三菱商事', '伊藤忠', '丸红', '住友商事', '日立制作所',
+    '新加坡科技', 'dbs', 'ocbc', '大华银行',
+]
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -115,14 +167,15 @@ class JobEngine:
         if not isinstance(rules, dict):
             raise ValidationError('规则必须是 JSON 对象')
         clean = self.get_rules()['data']
-        for key in ('cities', 'titles', 'blacklist', 'skills', 'districts', 'collect_titles', 'exclude_titles'):
+        for key in ('cities', 'titles', 'blacklist', 'skills', 'districts', 'collect_titles', 'exclude_titles', 'foreign_whitelist'):
             if key in rules:
                 values = rules[key]
-                if not isinstance(values, list) or len(values) > 100 or any(not isinstance(x, str) or len(x) > 100 for x in values):
-                    raise ValidationError(f'{key} 必须是字符串数组（最多100项）')
+                cap = 400 if key == 'foreign_whitelist' else 100
+                if not isinstance(values, list) or len(values) > cap or any(not isinstance(x, str) or len(x) > 100 for x in values):
+                    raise ValidationError(f'{key} 必须是字符串数组（最多{cap}项）')
                 clean[key] = list(dict.fromkeys(x.strip() for x in values if x.strip()))
                 if key == 'collect_titles':
-                    clean[key] = clean[key][:10]
+                    clean[key] = clean[key][:20]
         for key in ('min_salary', 'max_salary'):
             if key in rules:
                 clean[key] = number(rules[key], key, 0, 1000)
@@ -291,12 +344,27 @@ class JobEngine:
         return bool(re.search(r'(天使轮|pre-?a轮|a轮|b轮|c轮|战略融资|已上市|完成.{0,6}融资|获得.{0,6}融资)', body))
 
     @staticmethod
-    def _foreign_company(job):
-        """千家以上公司只准入外资/外企，名字或企业性质里要有明确证据。"""
+    def _foreign_company(job, whitelist=None):
+        """千家以上公司只准入外资/外企：企业性质字段、公司名证据，或外企白名单。"""
+        company = str(job.get('company') or '')
         text = ' '.join(str(job.get(k) or '') for k in ('company', 'company_type', 'financing'))
         if str(job.get('company_type') or '').strip():
-            return bool(re.search(r'(外商独资|外资|中外合资|外企|跨国)', text))
-        return bool(re.search(r'(外商独资|外资企业|外企|跨国公司|中外合资|\(中国\)|（中国）)', text))
+            if re.search(r'(外商独资|外资|中外合资|外企|跨国)', text):
+                return True
+        elif re.search(r'(外商独资|外资企业|外企|跨国公司|中外合资|\(中国\)|（中国）)', text):
+            return True
+        hay = company.lower()
+        for name in (whitelist if whitelist is not None else DEFAULT_FOREIGN_WHITELIST):
+            token = str(name).strip().lower()
+            if not token:
+                continue
+            if token.isascii() and len(token) <= 4:
+                # 短英文名（3M/TDK/UPS 之类）按词边界匹配，避免命中 Groups/Connect 这类词
+                if re.search(r'(?<![a-z0-9])' + re.escape(token) + r'(?![a-z0-9])', hay):
+                    return True
+            elif token in hay:
+                return True
+        return False
 
     @staticmethod
     def _company_band(value):
@@ -393,7 +461,7 @@ class JobEngine:
                     return -1, '公司规模不符合规则'
                 if rules.get('tiny_needs_funding') and band[1] <= 20 and not JobEngine._funded(job):
                     return -1, '公司规模 0-20 人且没有融资记录，需人工核对'
-                if rules.get('large_needs_foreign') and band[0] >= 1000 and not JobEngine._foreign_company(job):
+                if rules.get('large_needs_foreign') and band[0] >= 1000 and not JobEngine._foreign_company(job, rules.get('foreign_whitelist')):
                     return -1, '千人以上公司只准入外资/外企，该公司未确认为外资'
         if rules.get('recruitment_type') == 'social':
             social = JobEngine._social_job(job)

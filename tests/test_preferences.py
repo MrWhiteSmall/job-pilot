@@ -130,6 +130,29 @@ def test_tiny_company_needs_funding_and_large_needs_foreign(tmp_path):
     assert e.match_job(base(company_size='500-999人', title='AI Agent工程师'), '', rules)[0] >= 0
 
 
+def test_foreign_whitelist_lets_named_foreign_employers_through(tmp_path):
+    e = make(tmp_path)
+    e.set_rules({'titles': ['AI', 'Agent'], 'company_min': 0, 'company_max': 9999,
+                 'large_needs_foreign': True,
+                 'foreign_whitelist': ['博世', 'Siemens', '3M']})
+    rules = e.get_rules()['data']
+    big = base(company_size='1000-9999人', title='AI Agent工程师')
+    assert e.match_job({**big, 'company': '博世汽车部件（苏州）有限公司'}, '', rules)[0] >= 0
+    assert e.match_job({**big, 'company': 'Siemens Ltd. China'}, '', rules)[0] >= 0
+    assert e.match_job({**big, 'company': '3M 中国有限公司'}, '', rules)[0] >= 0
+    # 短英文白名单按词边界匹配，不能被 Groups / Connect 这类词误命中
+    assert e.match_job({**big, 'company': '杭州星尘 Groups 科技'}, '', rules)[0] == -1
+    assert e.match_job({**big, 'company': '杭州某某网络科技有限公司'}, '', rules)[0] == -1
+
+
+def test_foreign_whitelist_default_covers_common_employers():
+    from engine import DEFAULT_FOREIGN_WHITELIST
+
+    hay = ' '.join(DEFAULT_FOREIGN_WHITELIST).lower()
+    for name in ('博世', '西门子', '微软', '埃森哲', '马士基', '特斯拉'):
+        assert name.lower() in hay
+
+
 def test_salary_range_only_needs_an_intersection(tmp_path):
     e = make(tmp_path)
     e.set_rules({'min_salary': 20, 'max_salary': 30, 'titles': ['AI', 'Agent']})
