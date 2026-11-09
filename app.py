@@ -525,7 +525,7 @@ def run_once():
                     engine.log('followup', extra.get('message', ''), item['id'])
                 except Exception as exc:
                     engine.log('followup_failed', str(exc)[:200], item['id'])
-        if outcome['status'] == 'blocked' and any(word in outcome.get('message', '') for word in ('上限', '登录', '验证', '安全')):
+        if outcome['status'] == 'blocked' and any(word in outcome.get('message', '') for word in ('上限', '已满', '用完', '明日再来', '明天再来', '登录', '验证', '安全')):
             # Only platform-level stops (quota, login, captcha) halt the queue.
             engine.set_automation({'enabled': False})
             notify_user(f"托管已暂停：{outcome.get('message', '')}。处理完成后点「立即开始」继续。")

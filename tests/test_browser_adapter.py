@@ -61,6 +61,14 @@ class BrowserSafetyTests(unittest.TestCase):
         button.click.assert_called_once()
         page.close.assert_not_called()  # Keep the page for manual inspection.
 
+    def test_quota_exhausted_is_detected_before_clicking(self):
+        page = Mock()
+        page.locator.return_value.all_inner_texts.return_value = []
+        self.assertIn('上限', BossBrowser._limit_hit(page, '今日沟通次数已达上限'))
+        self.assertIsNone(BossBrowser._limit_hit(page, '正常岗位描述'))
+        page.locator.return_value.all_inner_texts.return_value = ['今天沟通次数已用完，明天再来']
+        self.assertIsNotNone(BossBrowser._limit_hit(page, ''))
+
 
 if __name__ == '__main__':
     unittest.main()

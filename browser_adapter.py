@@ -28,6 +28,13 @@ CITY_CODES = {
     '宁波': '101210400',
 }
 
+# BOSS 的「今日沟通额度用完」提示词（手机端投递也会占用同一个额度，所以本地计数不可靠）。
+LIMIT_WORDS = (
+    '沟通人数已达上限', '沟通次数已达上限', '今日沟通已达上限', '今日沟通次数已达上限',
+    '今日沟通人数已达上限', '沟通已达上限', '沟通已满', '沟通次数已用完',
+    '今日沟通次数已用完', '今天沟通次数已用完', '明日再来', '明天再来',
+)
+
 MASK_SCRIPT = """
 (() => {
   const noop = () => {};
@@ -500,6 +507,22 @@ class BossBrowser:
     def submit(self, job, draft=''):
         return self._call(self._submit, job, draft)
 
+    @staticmethod
+    def _limit_hit(page, body_text):
+        """Return the matched phrase when BOSS says today's greeting quota is used up."""
+        for word in LIMIT_WORDS:
+            if word in str(body_text or ''):
+                return word
+        try:
+            dialogs = page.locator('.dialog, .modal, .boss-dialog, .ui-dialog, .dialog-wrap, .boss-popup').all_inner_texts()
+        except Exception:
+            dialogs = []
+        joined = ' '.join(str(x) for x in dialogs) if isinstance(dialogs, list) else ''
+        for word in LIMIT_WORDS:
+            if word in joined:
+                return word
+        return None
+
     def _submit(self, job, draft):
         url = job.get('url', '')
         parsed = urlparse(url)
@@ -528,6 +551,9 @@ class BossBrowser:
                 return {'status': 'blocked', 'message': '页面显示继续沟通，该岗位可能已联系，停止重复投递。'}
             if '已投递' in normalized_body or '沟通过' in normalized_body:
                 return {'status': 'skipped', 'message': '页面显示已沟通/已投递，跳过重复投递。'}
+            hit = self._limit_hit(page, normalized_body)
+            if hit:
+                return {'status': 'blocked', 'message': f'BOSS 今日沟通额度已用完（{hit}），停止今日投递。'}
             button = page.get_by_role('link', name='立即沟通', exact=True)
             if not button.count():
                 button = page.get_by_role('button', name='立即沟通', exact=True)
@@ -547,8 +573,9 @@ class BossBrowser:
                     return {'status': 'sent', 'message': '页面确认 BOSS 打招呼成功（使用平台招呼语，未发送 PDF 附件）。', 'action': 'boss_greeting'}
                 if page.get_by_text('继续沟通', exact=True).count():
                     return {'status': 'sent', 'message': '页面由立即沟通变为继续沟通，已确认发起联系；未发送 PDF 附件。', 'action': 'boss_greeting'}
-                if any(x in text for x in ['今日沟通人数已达上限', '沟通人数已达上限']):
-                    return {'status': 'blocked', 'message': 'BOSS 显示今日沟通人数达到上限。'}
+                hit = self._limit_hit(page, text)
+                if hit:
+                    return {'status': 'blocked', 'message': f'BOSS 今日沟通额度已用完（{hit}），停止今日投递。'}
                 page.wait_for_timeout(400)
             return {'status': 'uncertain', 'message': '已点击沟通但未获得明确成功反馈，请人工核对，程序不会自动重试。'}
         except Exception as exc:
