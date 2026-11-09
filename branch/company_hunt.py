@@ -22,10 +22,9 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from branch.careers_probe import probe_careers
 
 BASE_URL = 'https://www.zhipin.com'
-SEARCH_URL = (
-    'https://www.zhipin.com/web/geek/company'
-    '?city=101210100&scale=303,304&page={page}'
-)
+# 真实可用的公司列表页是 /gongsi/（/web/geek/company 会 404）。城市取会话默认（杭州）。
+SEARCH_URL = 'https://www.zhipin.com/gongsi/?page={page}'
+SEARCH_QUERY_URL = 'https://www.zhipin.com/gongsi/?query={query}&page={page}'
 MAX_PAGES = 50
 
 CARD_SPLIT_RE = re.compile(
@@ -82,6 +81,12 @@ SALARY_RE = re.compile(
 )
 CITY_DOT_RE = re.compile(
     r'([\u4e00-\u9fa5]{2,8})\s*[·・]\s*[\u4e00-\u9fa5]{1,10}'
+)
+# 公司职位页把城市写在自由文本里，用白名单兜底，避免把招聘者姓名当城市。
+KNOWN_CITIES = (
+    '杭州', '上海', '北京', '深圳', '广州', '南京', '苏州', '成都', '武汉', '西安',
+    '合肥', '宁波', '嘉兴', '绍兴', '湖州', '金华', '无锡', '常州', '厦门', '长沙',
+    '郑州', '重庆', '天津', '青岛', '济南', '福州', '东莞', '佛山', '珠海', '南昌',
 )
 
 NAME_PATTERNS = (
@@ -247,6 +252,60 @@ def _normalize_city(text: str) -> str:
     return value
 
 
+def _parse_brand_cards(html: str) -> list[dict]:
+    """解析 /gongsi/ 品牌列表的真实结构（<div class="sub-li">）。
+
+    实测结构（2026-11）：
+        <li><div class="sub-li">
+          <a class="company-info" href="/gongsi/xxx.html"><div class="conpany-text">
+            <h4>公司名</h4><span>已上市</span><span>互联网</span></div></a>
+          <a class="about-info" href="/job_detail/xxx.html"><p>热招 <u class="h">岗位名</u> 25-50K·16薪</p></a>
+        </div></li>
+    列表页没有公司规模字段，size 一律留空，不猜。
+    """
+    if 'sub-li' not in html:
+        return []
+    cards: list[dict] = []
+    seen: set[str] = set()
+    for block in re.split(r'(?=<div\b[^>]*class\s*=\s*["\'][^"\']*sub-li["\'])', html)[1:]:
+        url_match = HREF_GONGSI_RE.search(block)
+        url = _canonical_url(url_match.group(1)) if url_match else ''
+        name = _clean_text(_first_text(r'<h4\b[^>]*>(.*?)</h4\s*>', block))
+        if not name:
+            continue
+        key = name
+        if key in seen:
+            continue
+        seen.add(key)
+
+        spans = [_clean_text(value) for value in re.findall(r'<span\b[^>]*>(.*?)</span\s*>', block, re.I | re.S)]
+        funding = next((value for value in spans if FUNDING_RE.search(value)), '')
+        industry = next((value for value in spans
+                         if value and not FUNDING_RE.search(value) and not SIZE_RE.search(value)
+                         and value not in INDUSTRY_NOISE and 2 <= len(value) <= 16), '')
+
+        hot_job = {}
+        job_match = JOB_ANCHOR_RE.search(block)
+        if job_match:
+            title = _clean_text(_first_text(r'<u\b[^>]*class\s*=\s*["\'][^"\']*h[^"\']*["\'][^>]*>(.*?)</u\s*>', block))
+            salary_match = SALARY_RE.search(_clean_text(block))
+            hot_job = {
+                'title': title,
+                'salary': _clean_text(salary_match.group(0)) if salary_match else '',
+                'url': _canonical_url(job_match.group(1)),
+            }
+
+        cards.append({
+            'name': name,
+            'industry': industry,
+            'size': '',
+            'funding': _normalize_funding(funding),
+            'url': url,
+            'hot_job': hot_job,
+        })
+    return cards
+
+
 def parse_company_cards(html: str) -> list[dict]:
     """解析 BOSS 公司搜索结果卡片。
 
@@ -255,6 +314,10 @@ def parse_company_cards(html: str) -> list[dict]:
     """
     if not html:
         return []
+
+    brand_cards = _parse_brand_cards(html)
+    if brand_cards:
+        return brand_cards
 
     cards: list[dict] = []
     seen: set[str] = set()
@@ -351,9 +414,12 @@ def parse_job_cards(html: str) -> list[dict]:
             salary = match.group(0) if match else ''
 
         city = _normalize_city(_first_text(CITY_CLASS_PATTERN, block))
-        if not city:
+        if city not in KNOWN_CITIES:
             match = CITY_DOT_RE.search(_clean_text(block))
             city = match.group(1) if match else ''
+        if city not in KNOWN_CITIES:
+            flat = _clean_text(block)
+            city = next((name for name in KNOWN_CITIES if name in flat), '')
 
         if not title and not url:
             continue
@@ -394,10 +460,25 @@ def _close_page(page) -> None:
 
 
 def _open_html(browser, url: str, timeout: int = 30000) -> str:
-    """用 BossBrowser 的鸭子类型接口开页、检查登录/验证、取 body HTML。"""
+    """用 BossBrowser 的鸭子类型接口开页、检查登录/验证、取 body HTML。
+
+    /gongsi/ 的静态资源会长期挂着，等 domcontentloaded 会整页超时，
+    所以先 commit 再给一段固定渲染时间，最后按容器出现与否决定是否继续等。
+    """
     page = browser._new_page()
     try:
-        browser._goto(page, url, timeout=timeout)
+        if hasattr(page, 'goto'):
+            page.goto(url, wait_until='commit', timeout=timeout)
+        else:
+            browser._goto(page, url, timeout=timeout)
+        try:
+            page.wait_for_selector('.company-list, .job-list, .job-card, .job-card-box, .job-list-box', timeout=8000)
+        except Exception:
+            pass
+        try:
+            page.wait_for_timeout(2500)
+        except Exception:
+            pass
         browser._check(page)
         return page.inner_html('body')
     finally:
@@ -408,8 +489,8 @@ def _open_html(browser, url: str, timeout: int = 30000) -> str:
             pass
 
 
-def discover_companies(limit: int = 20, browser=None) -> list[dict]:
-    """翻 BOSS 公司搜索页，按公司名去重，直到 limit 或无新公司。"""
+def discover_companies(limit: int = 20, browser=None, query: str = '') -> list[dict]:
+    """翻 BOSS 公司列表页，按公司名去重，直到 limit 或无新公司。"""
     if browser is None:
         raise RuntimeError('需要传入 browser（BossBrowser 实例）才能采集')
     if limit <= 0:
@@ -419,7 +500,13 @@ def discover_companies(limit: int = 20, browser=None) -> list[dict]:
     seen: set[str] = set()
     page_no = 1
     while len(companies) < limit and page_no <= MAX_PAGES:
-        html = _open_html(browser, SEARCH_URL.format(page=page_no))
+        if query:
+            url = SEARCH_QUERY_URL.format(query=query, page=page_no)
+        elif page_no == 1:
+            url = 'https://www.zhipin.com/gongsi/'
+        else:
+            url = SEARCH_URL.format(page=page_no)
+        html = _open_html(browser, url)
         added = 0
         for card in parse_company_cards(html):
             key = card['name'] or card['url']
@@ -436,14 +523,53 @@ def discover_companies(limit: int = 20, browser=None) -> list[dict]:
     return companies
 
 
+def _all_jobs_url(company_url: str) -> str:
+    """公司主页只展示「热招职位」，全部在招岗位在 /gongsi/job/<id>.html。"""
+    match = re.search(r'/gongsi/(?!job/)([A-Za-z0-9~_\-]+)\.html', company_url)
+    if match:
+        return f'https://www.zhipin.com/gongsi/job/{match.group(1)}.html'
+    return company_url
+
+
 def list_company_jobs(company_url: str, browser) -> list[dict]:
-    """打开 BOSS 公司页，解析在招岗位；没有可解析内容时返回空列表。"""
+    """打开 BOSS 公司「全部职位」页，解析在招岗位；没有可解析内容时返回空列表。"""
     if not company_url:
         return []
     if browser is None:
         raise RuntimeError('需要传入 browser（BossBrowser 实例）才能采集')
-    html = _open_html(browser, company_url)
+    html = _open_html(browser, _all_jobs_url(company_url))
     return parse_job_cards(html)
+
+
+def company_from_job(job_url: str, browser) -> dict:
+    """从岗位详情页找到公司页，再列出这家公司的在招岗位。
+
+    这条路径不依赖公司列表页（那个页面只给品牌大厂），适合从已经有岗位数据的
+    公司反查「它还在招什么」。找不到公司链接时返回空 url + error，不猜。
+    """
+    if browser is None:
+        raise RuntimeError('需要传入 browser（BossBrowser 实例）才能采集')
+    if not job_url:
+        return {'company': '', 'url': '', 'jobs': [], 'error': '缺少岗位链接'}
+    html = _open_html(browser, job_url)
+    name = ''
+    link = ''
+    for attrs, inner in re.findall(r'<a\b([^>]*)>(.*?)</a\s*>', html, re.I | re.S):
+        if not re.search(r'/gongsi/[A-Za-z0-9~_\-]+\.html', attrs):
+            continue
+        text = _clean_text(inner)
+        if not 2 <= len(text) <= 40 or text in NAME_NOISE:
+            continue
+        href = re.search(r'href\s*=\s*["\']([^"\']+)["\']', attrs, re.I)
+        if not href:
+            continue
+        link = _canonical_url(href.group(1))
+        name = text
+        break
+    if not link:
+        return {'company': name, 'url': '', 'jobs': [], 'error': '岗位页未找到公司主页链接'}
+    jobs = list_company_jobs(link, browser)
+    return {'company': name, 'url': link, 'jobs': jobs, 'error': ''}
 
 
 def _resolve_site(company: dict, resolver) -> str:

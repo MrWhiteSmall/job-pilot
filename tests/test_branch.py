@@ -186,8 +186,8 @@ def test_discover_companies_limit_dedupe_and_cleanup():
 
     assert [card['name'] for card in companies] == ['杭州云枢智能科技有限公司']
     assert len(browser.visited) == 1
-    assert 'city=101210100' in browser.visited[0]
-    assert 'page=1' in browser.visited[0]
+    # 真实可用的是 /gongsi/ 列表（城市取会话默认），不再拼 city= 参数。
+    assert browser.visited[0] == 'https://www.zhipin.com/gongsi/'
     assert browser.sweeps == 1
     assert browser.pages[0].closed is True
 
@@ -226,7 +226,7 @@ def test_list_company_jobs_uses_browser_and_closes_page():
     )
 
     assert [job['title'] for job in jobs] == ['AI Agent 工程师', 'Python 后端开发工程师']
-    assert browser.visited == ['https://www.zhipin.com/gongsi/abc123.html']
+    assert browser.visited == ['https://www.zhipin.com/gongsi/job/abc123.html']
     assert browser.pages[0].closed is True
 
 

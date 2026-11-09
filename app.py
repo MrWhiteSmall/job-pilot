@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlparse, urlsplit
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
@@ -241,6 +242,52 @@ def browser_tidy():
     except (TypeError, ValueError):
         keep = 1
     return result(_browser().tidy(keep))
+
+
+@app.post('/api/branch/discover')
+@safe
+def branch_discover():
+    """公司找人分支：借用同一个 Chrome 采集公司列表（只读，不投递）。"""
+    from branch.company_hunt import discover_companies
+
+    data = payload()
+    try:
+        limit = max(1, min(50, int(data.get('limit') or 10)))
+    except (TypeError, ValueError):
+        limit = 10
+    query = str(data.get('query') or '').strip()[:40]
+    browser = _browser()
+    companies = browser._call(lambda: discover_companies(limit, browser=browser, query=query))
+    return result({'count': len(companies), 'companies': companies})
+
+
+@app.post('/api/branch/company-jobs')
+@safe
+def branch_company_jobs():
+    """列出某家公司在 BOSS 的在招岗位（只读）。"""
+    from branch.company_hunt import list_company_jobs
+
+    url = str(payload().get('url') or '').strip()
+    parts = urlparse(url)
+    if parts.scheme != 'https' or parts.hostname != 'www.zhipin.com' or '/gongsi/' not in parts.path:
+        raise ValueError('只接受 https://www.zhipin.com/gongsi/ 开头的公司页')
+    browser = _browser()
+    jobs = browser._call(lambda: list_company_jobs(url, browser))
+    return result({'count': len(jobs), 'jobs': jobs})
+
+
+@app.post('/api/branch/company-of-job')
+@safe
+def branch_company_of_job():
+    """从岗位页反查公司主页，并列出该公司在招岗位（只读）。"""
+    from branch.company_hunt import company_from_job
+
+    job_url = str(payload().get('job_url') or '').strip()
+    parts = urlparse(job_url)
+    if parts.scheme != 'https' or parts.hostname != 'www.zhipin.com' or not re.fullmatch(r'/job_detail/[A-Za-z0-9_-]+\.html', parts.path):
+        raise ValueError('只接受 www.zhipin.com 的岗位详情页')
+    browser = _browser()
+    return result(browser._call(lambda: company_from_job(job_url, browser)))
 
 
 _enrich_seen = set()
