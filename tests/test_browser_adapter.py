@@ -39,6 +39,15 @@ class BrowserSafetyTests(unittest.TestCase):
             self.assertEqual(browser._submit(job, '')['status'], 'blocked')
             page.get_by_role.assert_not_called()
 
+    def test_closed_posting_is_skipped_instead_of_pausing(self):
+        page = Mock()
+        page.get_by_text.return_value.count.return_value = 0
+        browser = self.make_browser(page)
+        browser._check = Mock(return_value='AI应用开发工程师 职位已关闭 沟通过')
+        result = browser._submit({'url': 'https://www.zhipin.com/job_detail/abc.html', 'title': 'AI应用开发工程师'}, '')
+        self.assertEqual(result['status'], 'skipped')
+        page.get_by_role.assert_not_called()
+
     def test_click_timeout_is_uncertain_not_failed_or_sent(self):
         page = Mock()
         page.get_by_text.return_value.count.return_value = 0

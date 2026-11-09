@@ -137,7 +137,12 @@ class BossBrowser:
 
     def _context(self):
         if self.context is not None and self.connection is not None and self.connection.is_connected():
-            return self.context
+            try:
+                # 浏览器被用户或外部脚本关掉后连接仍"连着"，这里探一次页面，死了就重开。
+                self.context.pages
+                return self.context
+            except Exception:
+                self._detach()
         from playwright.sync_api import sync_playwright
         self._detach()
         if not self._endpoint_alive():
@@ -427,13 +432,24 @@ class BossBrowser:
                 if value and not re.search('[\ue000-\uf8ff]', value) and re.fullmatch(r'\d{1,3}\s*[-–~]\s*\d{1,3}K(?:·\d{1,2}薪)?|面议', value):
                     item['salary'] = value
                     break
-        if not item.get('company_size'):
-            for text in page.locator('.sider-company, .job-company, .company-info').all_text_contents():
-                flat = re.sub(r'\s+', ' ', text)
-                size = re.search(r'(?:\d[\d,]*\s*[-–~至]\s*\d[\d,]*|\d[\d,]*以上)\s*人', flat)
-                if size and (not item.get('company') or item['company'] in re.sub(r'\s+', '', text)):
-                    item['company_size'] = re.sub(r'\s+', '', size.group(0))
-                    break
+        if not item.get('company_size') or not item.get('financing') or not item.get('company_type'):
+            flats = [re.sub(r'\s+', ' ', text) for text in page.locator('.sider-company, .job-company, .company-info').all_text_contents()]
+            joined = ' '.join(flats)
+            if not item.get('company_size'):
+                for flat in flats:
+                    size = re.search(r'(?:\d[\d,]*\s*[-–~至]\s*\d[\d,]*|\d[\d,]*以上)\s*人', flat)
+                    if size and (not item.get('company') or item['company'] in re.sub(r'\s+', '', flat)):
+                        item['company_size'] = re.sub(r'\s+', '', size.group(0))
+                        break
+            # 卡片上还挂着融资阶段（未融资/A轮/已上市…）与企业性质（外商独资…）
+            if not item.get('financing'):
+                stage = re.search(r'(未融资|不需要融资|天使轮|Pre-?A轮|A\+?轮|B\+?轮|C\+?轮|D\+?轮|E轮|F轮|战略融资|已上市)', joined, re.I)
+                if stage:
+                    item['financing'] = stage.group(0)
+            if not item.get('company_type'):
+                kind = re.search(r'(外商独资|外资企业|外资|中外合资|外企|跨国企业)', joined)
+                if kind:
+                    item['company_type'] = kind.group(0)
         if not item.get('education') or not item.get('experience'):
             tags = [t.strip() for t in page.locator('.job-primary .info-primary p, .job-primary .info-primary .text, .job-info .text').all_inner_texts() if t.strip()]
             for tag in tags:
@@ -489,15 +505,19 @@ class BossBrowser:
             salary = re.split('[·•]', str(job.get('salary') or ''))[0].strip()
             if salary and re.sub(r'\s+', '', salary) not in normalized_body:
                 return {'status': 'blocked', 'message': '薪资与采集结果不一致，请重新分析并核对岗位。'}
+            if '职位已关闭' in normalized_body or '职位已下线' in normalized_body or '该职位不存在' in normalized_body:
+                return {'status': 'skipped', 'message': '岗位已关闭或下线，跳过本次沟通。'}
             if page.get_by_text('继续沟通', exact=True).count():
                 return {'status': 'blocked', 'message': '页面显示继续沟通，该岗位可能已联系，停止重复投递。'}
+            if '已投递' in normalized_body or '沟通过' in normalized_body:
+                return {'status': 'skipped', 'message': '页面显示已沟通/已投递，跳过重复投递。'}
             button = page.get_by_role('link', name='立即沟通', exact=True)
             if not button.count():
                 button = page.get_by_role('button', name='立即沟通', exact=True)
             if not button.count():
                 button = page.get_by_text('立即沟通', exact=True)
             if button.count() != 1 or not button.is_visible():
-                return {'status': 'blocked', 'message': '无法唯一确认立即沟通按钮，请手动检查登录状态和岗位页面。'}
+                return {'status': 'blocked', 'message': '无法唯一确认沟通按钮，页面结构可能变化，请人工检查岗位页。'}
             # Read the posting for a few seconds first, like a human would.
             page.wait_for_timeout(random.randint(2600, 5200))
             # Once dispatched, any exception counts as uncertain, including a click timeout.

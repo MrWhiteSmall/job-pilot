@@ -243,6 +243,25 @@ def browser_tidy():
     return result(_browser().tidy(keep))
 
 
+_enrich_seen = set()
+
+
+def _needs_company_facts(job):
+    """0-20 人要融资证据、1000+ 人要外资证据；缺了才值得再读一次详情页。"""
+    rank = _enrich_rank(job)
+    return rank < 2
+
+
+def _enrich_rank(job):
+    """0 = 小公司缺融资证据，1 = 千人公司缺外资证据，2 = 缺规模/薪资/完整 JD。"""
+    band = engine._company_band(job.get('company_size'))
+    if band is not None and band[1] <= 20 and not job.get('financing'):
+        return 0
+    if band is not None and band[0] >= 1000 and not job.get('company_type'):
+        return 1
+    return 2
+
+
 @app.post('/api/browser/enrich')
 @safe
 def browser_enrich():
@@ -252,18 +271,26 @@ def browser_enrich():
     except (TypeError, ValueError):
         raise ValidationError('limit 必须是整数') from None
     pending = [j for j in engine.state()['jobs']
-               if (not j.get('company_size') or not j.get('salary') or '【列表摘要' in str(j.get('description') or '')) and j.get('status') != 'sent']
-    pending.sort(key=lambda j: -j['id'])
+               if (not j.get('company_size') or not j.get('salary')
+                   or '【列表摘要' in str(j.get('description') or ''))
+               and j.get('status') != 'sent']
+    seen = _enrich_seen
+    if pending and all(j['id'] in seen for j in pending):
+        seen.clear()
+    pending.sort(key=lambda j: (1 if j['id'] in seen else 0, _enrich_rank(j), -j['id']))
+    picked = pending[:max(1, min(limit, 40))]
     targets = [{key: j.get(key, '') for key in ('title', 'company', 'city', 'salary', 'description',
                                                 'url', 'source', 'company_size', 'education',
-                                                'experience', 'recruitment_type')} for j in pending[:max(1, min(limit, 40))]]
+                                                'experience', 'recruitment_type')} for j in picked]
     if not targets:
         return result({'checked': 0, 'ok': 0, 'message': '没有需要补全的岗位'})
     done = _browser().enrich(targets, limit)
+    seen.update(j['id'] for j in picked)
     ok = [j for j in done if not j.get('error')]
     errors = [j for j in done if j.get('error')]
     return result({'checked': len(done), 'ok': len(ok), 'failed': len(errors),
                    'errors': [e['error'] for e in errors][:5],
+                   'sample': [{k: j.get(k) for k in ('company', 'company_size', 'financing', 'company_type')} for j in ok[:3]],
                    'import': engine.import_jobs(ok) if ok else {'added': 0, 'total': 0, 'duplicates': 0}})
 
 
@@ -364,8 +391,13 @@ def run_once():
                     outcome = {'status': 'blocked', 'message': f'平台拦截：{detail[:160]}'}
                 else:
                     outcome = {'status': 'uncertain', 'message': '浏览器执行异常，结果待人工核对，不会自动重试'}
-            if outcome.get('status') not in ('sent', 'blocked', 'uncertain'):
+            if outcome.get('status') not in ('sent', 'blocked', 'uncertain', 'skipped'):
                 outcome = {'status': 'uncertain', 'message': '平台结果无法确认，请人工核对'}
+            if outcome['status'] == 'skipped':
+                # Posting closed or already contacted: park it instead of stopping the queue.
+                engine.finish_attempt(item['id'], 'rejected', outcome.get('message', ''))
+                engine.skip(item['id'], outcome.get('message', '岗位已关闭，跳过'))
+                return {'status': 'done', 'processed': 1, 'outcomes': [{'job_id': item['id'], **outcome}]}
         engine.finish_attempt(item['id'], outcome['status'], outcome.get('message', ''))
         if outcome['status'] == 'sent' and cfg['mode'] == 'live':
             # The click sends BOSS's own stored greeting; this adds our agent-focused note.

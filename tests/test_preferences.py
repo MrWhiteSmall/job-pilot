@@ -93,6 +93,43 @@ def test_non_engineering_titles_are_excluded(tmp_path):
     assert e.match_job(base(title='Agent研发工程师'), '', rules)[0] >= 0
 
 
+def test_soft_campus_wording_does_not_block(tmp_path):
+    """"可校招 / 接受应届" still hires experienced people; only campus-only wording blocks."""
+    e = make(tmp_path)
+    e.set_rules({'recruitment_type': 'social', 'titles': ['AI', 'Agent']})
+    rules = e.get_rules()['data']
+    assert e.match_job(base(title='可校招-AI Agent研发工程师', experience='1-3年'), '', rules)[0] >= 0
+    assert e.match_job(base(title='AI Agent工程师（接受应届）', experience='3-5年'), '', rules)[0] >= 0
+    assert e.match_job(base(title='AI Agent工程师', experience='在校/应届'), '', rules)[0] == -1
+    assert e.match_job(base(title='【2027校招】AI Agent开发', experience='经验不限'), '', rules)[0] == -1
+
+
+def test_large_staffing_vendors_are_treated_as_outsourcing(tmp_path):
+    e = make(tmp_path)
+    e.set_rules({'titles': ['AI', 'Python']})
+    rules = e.get_rules()['data']
+    for company in ('北京软通动力云计', '中软国际', '博彦科技', '文思海辉'):
+        score, reason = e.match_job(base(title='AI应用开发', company=company), '', rules)
+        assert score == -1 and '外包' in reason, company
+
+
+def test_tiny_company_needs_funding_and_large_needs_foreign(tmp_path):
+    e = make(tmp_path)
+    e.set_rules({'titles': ['AI', 'Agent'], 'company_min': 0, 'company_max': 9999,
+                 'tiny_needs_funding': True, 'large_needs_foreign': True})
+    rules = e.get_rules()['data']
+    tiny = base(company_size='0-20人', title='AI Agent工程师')
+    assert e.match_job(tiny, '', rules)[0] == -1
+    assert '融资' in e.match_job(tiny, '', rules)[1]
+    assert e.match_job({**tiny, 'financing': 'A轮'}, '', rules)[0] >= 0
+    assert e.match_job({**tiny, 'financing': '未融资'}, '', rules)[0] == -1
+    big = base(company_size='1000-9999人', title='AI Agent工程师')
+    assert e.match_job(big, '', rules)[0] == -1
+    assert '外资' in e.match_job(big, '', rules)[1]
+    assert e.match_job({**big, 'company_type': '外商独资'}, '', rules)[0] >= 0
+    assert e.match_job(base(company_size='500-999人', title='AI Agent工程师'), '', rules)[0] >= 0
+
+
 def test_salary_range_only_needs_an_intersection(tmp_path):
     e = make(tmp_path)
     e.set_rules({'min_salary': 20, 'max_salary': 30, 'titles': ['AI', 'Agent']})

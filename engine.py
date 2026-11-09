@@ -131,10 +131,13 @@ class JobEngine:
                 if rules[key] in (None, ''):
                     clean.pop(key, None)
                     continue
-                value = number(rules[key], key, 1, 1000000)
+                value = number(rules[key], key, 0, 1000000)
                 if value != int(value):
                     raise ValidationError(f'{key} 必须是整数')
                 clean[key] = int(value)
+        for key in ('tiny_needs_funding', 'large_needs_foreign'):
+            if key in rules:
+                clean[key] = bool(rules[key])
         if 'recruitment_type' in rules:
             if rules['recruitment_type'] in (None, ''):
                 clean.pop('recruitment_type', None)
@@ -213,7 +216,7 @@ class JobEngine:
             for raw in jobs:
                 if not isinstance(raw, dict):
                     raise ValidationError('每条岗位必须是对象')
-                job = {key: str(raw.get(key) or '').strip()[:20000] for key in ('title', 'company', 'city', 'salary', 'description', 'url', 'source', 'company_size', 'education', 'experience', 'recruitment_type')}
+                job = {key: str(raw.get(key) or '').strip()[:20000] for key in ('title', 'company', 'city', 'salary', 'description', 'url', 'source', 'company_size', 'education', 'experience', 'recruitment_type', 'financing', 'company_type')}
                 job['title'] = job['title'] or str(raw.get('position') or '').strip()
                 if not job['title']:
                     continue
@@ -231,7 +234,7 @@ class JobEngine:
                     existing = db.execute('SELECT id,data,status FROM jobs WHERE external_id=?', (ext,)).fetchone()
                     old_data = self._json(existing['data']) if existing else {}
                     changed = False
-                    for key in ('salary', 'city', 'company_size', 'education', 'experience', 'recruitment_type'):
+                    for key in ('salary', 'city', 'company_size', 'education', 'experience', 'recruitment_type', 'financing', 'company_type'):
                         if job.get(key) and not old_data.get(key):
                             old_data[key] = job[key]
                             changed = True
@@ -275,6 +278,27 @@ class JobEngine:
         return job
 
     @staticmethod
+    def _funded(job):
+        """True only when there is visible funding evidence (0-20 人必须融过资)."""
+        stage = str(job.get('financing') or '')
+        if stage and any(x in stage for x in ('未融资', '不需要融资')):
+            return False
+        pattern = r'(未融资|不需要融资|天使轮|pre-?a轮|a\+?轮|b\+?轮|c\+?轮|d\+?轮|e轮|f轮|战略融资|已上市|融资|风投)'
+        if re.search(pattern, (stage + ' ' + str(job.get('company_size') or '')).lower()):
+            return not re.search(r'未融资|不需要融资', stage)
+        # 融资信息有时只写在公司介绍里，宁可算"有"也不因为读不到就误杀
+        body = str(job.get('description') or '')[:3000].lower()
+        return bool(re.search(r'(天使轮|pre-?a轮|a轮|b轮|c轮|战略融资|已上市|完成.{0,6}融资|获得.{0,6}融资)', body))
+
+    @staticmethod
+    def _foreign_company(job):
+        """千家以上公司只准入外资/外企，名字或企业性质里要有明确证据。"""
+        text = ' '.join(str(job.get(k) or '') for k in ('company', 'company_type', 'financing'))
+        if str(job.get('company_type') or '').strip():
+            return bool(re.search(r'(外商独资|外资|中外合资|外企|跨国)', text))
+        return bool(re.search(r'(外商独资|外资企业|外企|跨国公司|中外合资|\(中国\)|（中国）)', text))
+
+    @staticmethod
     def _company_band(value):
         text = str(value or '').replace(',', '').replace('，', '').replace('人', '').strip()
         if not text:
@@ -306,8 +330,9 @@ class JobEngine:
         evidence = ' '.join(str(job.get(k, '')) for k in ('title', 'experience')).lower()
         description = str(job.get('description', '')).lower()
         description = re.sub(r'(接受|欢迎|允许|不限|均可)\s*应届生?', '', description)
-        # "接受应届 / 欢迎应届 / 应届也可" still hires experienced people; only campus-only wording blocks.
-        evidence = re.sub(r'(接受|欢迎|允许|可|不限|均可|也能|也要)\s*应届生?', '', evidence)
+        # "接受应届 / 欢迎应届 / 应届也可 / 可校招" still hires experienced people; only
+        # campus-only wording blocks. Strip the soft forms before looking for campus words.
+        evidence = re.sub(r'(接受|欢迎|允许|可|不限|均可|也能|也要|同时)\s*(?:应届生?|校招生?|校园招聘)', '', evidence)
         if (any(x in evidence for x in ('校园', '校招', '应届', '在校', '实习', '兼职', '临时', 'campus', 'internship'))
                 or re.search(r'(?:面向|仅限|招聘|招募|要求|工作周期).{0,12}(?:应届|在校|校招|校园招聘|实习生|兼职|临时)', description)):
             return False
@@ -315,6 +340,13 @@ class JobEngine:
         if kind in ('social', '社招', '社会招聘', '社会招募'):
             return True
         if kind in ('campus', 'internship', '校园', '校园招聘', '校招', '应届', '应届生', '实习'):
+            # BOSS 会把"可校招 / 接受应届"的社招岗也打上 campus 标签。只有当标题或开头
+            # 明确写了"可校招/接受应届"、而且职级不是学生口径时才按社招放行。
+            head = (str(job.get('title', '')) + ' ' + str(job.get('description', ''))[:300]).lower()
+            soft = re.search(r'(?:可|接受|欢迎|允许|同时|也)\s*(?:校招|应届生?|校园招聘)', head)
+            exp = str(job.get('experience', '')).strip()
+            if soft and '年' in exp and '在校' not in exp and '应届' not in exp:
+                return True
             return False
         exp = str(job.get('experience', '')).strip()
         if exp and any(x in exp for x in ('经验不限', '无需经验', '1-3年', '1年以上', '3-5年', '5-10年', '10年以上')):
@@ -329,7 +361,9 @@ class JobEngine:
         description = str(job.get('description') or '').lower()
         agency = ('科锐', '外企德科', '德科', '万宝盛华', '任仕达', '埃摩森', '米高蒲志', '翰德', '锐仕方达',
                   '猎聘', '智联招聘', '前程无忧', '中智', '上海外服', 'fesco', 'adecco', 'manpower', 'randstad',
-                  '人力外包', '人才外包', '劳务派遣', '猎头')
+                  '人力外包', '人才外包', '劳务派遣', '猎头',
+                  # 大型人力/外包服务商：岗位多为派驻，公司名不带"外包"字样
+                  '软通', '中软国际', '博彦', '文思海辉', '中电金信', '佰钧成', '法本信息', '中科软')
         if any(name in company for name in agency):
             return '招聘方为人力/外包服务机构'
         body = f'{title} {description}'
@@ -357,6 +391,10 @@ class JobEngine:
                 high_bound = float(rules.get('company_max', float('inf')))
                 if band[0] < low_bound or band[1] > high_bound:
                     return -1, '公司规模不符合规则'
+                if rules.get('tiny_needs_funding') and band[1] <= 20 and not JobEngine._funded(job):
+                    return -1, '公司规模 0-20 人且没有融资记录，需人工核对'
+                if rules.get('large_needs_foreign') and band[0] >= 1000 and not JobEngine._foreign_company(job):
+                    return -1, '千人以上公司只准入外资/外企，该公司未确认为外资'
         if rules.get('recruitment_type') == 'social':
             social = JobEngine._social_job(job)
             if social is None:
