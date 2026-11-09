@@ -428,7 +428,9 @@ def run_once():
         last = engine.last_attempt(cfg['mode'])
         if last and (datetime.now(timezone.utc) - datetime.fromisoformat(last['created_at'])).total_seconds() < cfg['interval_seconds']:
             return {'status': 'interval', 'processed': 0}
-        if cfg['auto_collect'] and time.monotonic() - _last_collect >= 1200:
+        # 采集会独占浏览器几分钟，所以只在队列快见底时才去补货，别和投递抢时间。
+        queue = engine.queue(cfg['min_score'], cfg['mode'])
+        if cfg['auto_collect'] and len(queue) < 3 and time.monotonic() - _last_collect >= 1200:
             _last_collect = time.monotonic()
             try:
                 engine.import_jobs(_browser().collect(engine.get_rules()['data']))
