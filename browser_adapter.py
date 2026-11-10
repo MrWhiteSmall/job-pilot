@@ -317,11 +317,12 @@ class BossBrowser:
             offset = (self._collect_round * 3) % max(1, len(titles))
             titles = titles[offset:] + titles[:offset]
             visits = 0
+            started = time.time()
             for active in plans:
                 if jobs:
                     break
                 for city_code, query, page_no in [(c, q, n) for q in titles[:10] for n in (1, 2) for c in codes]:
-                    if visits >= 8:
+                    if visits >= 8 or time.time() - started > 330:
                         break
                     visits += 1
                     page.bring_to_front()
@@ -378,7 +379,9 @@ class BossBrowser:
             # retain their summary label, rather than inventing missing requirements.
             detail = self._new_page()
             try:
-                for item in unique[:8]:
+                for item in unique[:6]:
+                    if time.time() - started > 420:
+                        break
                     try:
                         self._read_detail(detail, item)
                     except Exception:

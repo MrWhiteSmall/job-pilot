@@ -428,20 +428,23 @@ def run_once():
         last = engine.last_attempt(cfg['mode'])
         if last and (datetime.now(timezone.utc) - datetime.fromisoformat(last['created_at'])).total_seconds() < cfg['interval_seconds']:
             return {'status': 'interval', 'processed': 0}
-        # 采集会独占浏览器几分钟，所以只在队列快见底时才去补货，别和投递抢时间。
-        queue = engine.queue(cfg['min_score'], cfg['mode'])
-        if cfg['auto_collect'] and len(queue) < 3 and time.monotonic() - _last_collect >= 1200:
-            _last_collect = time.monotonic()
-            try:
-                engine.import_jobs(_browser().collect(engine.get_rules()['data']))
-            except Exception as exc:
-                # A failed crawl must not stop the queue that is already analysed.
-                engine.log('collect_blocked', str(exc)[:300])
+        # 先把已有库存入队：一开跑就去采集会白等几分钟，投递反而推迟。
         if cfg['auto_approve']:
             _auto_approve(cfg)
             if not engine.queue(cfg['min_score'], cfg['mode']):
                 _enrich_matches(cfg)
                 _auto_approve(cfg)
+        queue = engine.queue(cfg['min_score'], cfg['mode'])
+        # 采集会独占浏览器几分钟，所以只在队列快见底时才去补货，别和投递抢时间。
+        if cfg['auto_collect'] and len(queue) < 3 and time.monotonic() - _last_collect >= 1200:
+            _last_collect = time.monotonic()
+            try:
+                engine.import_jobs(_browser().collect(engine.get_rules()['data']))
+                if cfg['auto_approve']:
+                    _auto_approve(cfg)
+            except Exception as exc:
+                # A failed crawl must not stop the queue that is already analysed.
+                engine.log('collect_blocked', str(exc)[:300])
         queue = engine.queue(cfg['min_score'], cfg['mode'])
         if not queue:
             return {'status': 'idle', 'processed': 0}
