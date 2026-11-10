@@ -10,6 +10,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -80,6 +81,18 @@ def keep_queue_full(state):
         return
     if time.monotonic() - LAST_ENRICH < 240:
         return
+    # 投递刚发过就别抢浏览器：补全一次要几分钟，会把节奏拖垮。
+    attempts = state.get('attempts') or []
+    stamps = [a.get('created_at') for a in attempts if a.get('created_at')]
+    if stamps:
+        try:
+            latest = max(datetime.fromisoformat(s.replace('Z', '+00:00')) for s in stamps)
+            if latest.tzinfo is None:
+                latest = latest.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - latest).total_seconds() < 600:
+                return
+        except ValueError:
+            pass
     LAST_ENRICH = time.monotonic()
     try:
         done = call('/api/browser/enrich', {'limit': 10}, timeout=600)
@@ -88,26 +101,55 @@ def keep_queue_full(state):
         note(f'补充岗位详情失败：{exc}')
 
 
+def stalled(state, limit=900):
+    """Enabled, has work, yet nothing has gone out for a long time = a hung browser call."""
+    automation = state.get('automation') or {}
+    stats = state.get('stats') or {}
+    if not automation.get('enabled'):
+        return False
+    if (stats.get('today_remaining') or 0) <= 0 or (stats.get('shortlisted') or 0) <= 0:
+        return False
+    attempts = state.get('attempts') or []
+    stamps = [a.get('created_at') for a in attempts if a.get('created_at')]
+    if not stamps:
+        return False
+    try:
+        latest = max(datetime.fromisoformat(s.replace('Z', '+00:00')) for s in stamps)
+    except ValueError:
+        return False
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - latest).total_seconds() > limit
+
+
+def restart(note_text):
+    note(note_text)
+    kill_app()
+    time.sleep(2)
+    start_app()
+    time.sleep(8)
+    for _ in range(6):
+        try:
+            call('/api/state')
+            break
+        except Exception:
+            time.sleep(5)
+    try:
+        resume()
+        note('已重启并恢复托管')
+    except Exception as exc:
+        note(f'重启后仍无法恢复：{exc}')
+
+
 def tick():
     try:
         state = call('/api/state')
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
-        note(f'接口不可用，准备重启：{exc}')
-        kill_app()
-        time.sleep(2)
-        start_app()
-        time.sleep(8)
-        for _ in range(6):
-            try:
-                call('/api/state')
-                break
-            except Exception:
-                time.sleep(5)
-        try:
-            resume()
-            note('已重启并恢复托管')
-        except Exception as exc:
-            note(f'重启后仍无法恢复：{exc}')
+        restart(f'接口不可用，准备重启：{exc}')
+        return
+
+    if stalled(state):
+        restart('托管开着但 15 分钟没有新动作（浏览器调用卡死），重启恢复')
         return
 
     automation = state.get('automation') or {}

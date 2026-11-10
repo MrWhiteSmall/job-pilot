@@ -341,6 +341,24 @@ def browser_enrich():
                    'import': engine.import_jobs(ok) if ok else {'added': 0, 'total': 0, 'duplicates': 0}})
 
 
+NEAR_MISS_TITLE = re.compile(r'开发|工程师|研发')
+NEAR_MISS_BLOCK = re.compile(r'专家|研究员|架构|负责人|总监|解决方案|产品|经理')
+
+
+def _near_miss_ok(job, cfg):
+    """库存枯竭时的保底：硬筛已过、只是 JD 没写命中技能的研发类岗位。
+
+    仅当规则开启 accept_near_miss 时启用，且标题必须是研发岗，专家/研究员一律不放。
+    """
+    rules = engine.get_rules()['data']
+    if not rules.get('accept_near_miss'):
+        return False
+    score = float(job.get('score') or 0)
+    title = str(job.get('title') or '')
+    return (score >= 40 and score < float(cfg['min_score'])
+            and bool(NEAR_MISS_TITLE.search(title)) and not NEAR_MISS_BLOCK.search(title))
+
+
 def _auto_approve(cfg):
     new_jobs = [j for j in engine.state()['jobs'] if j['status'] == 'new']
     for job in new_jobs[:30]:
@@ -350,7 +368,8 @@ def _auto_approve(cfg):
     for job in engine.state()['jobs']:
         # A failed AI request falls back to local scoring and needs explicit review.
         if (job['status'] in ('matched', 'simulated') and job['score'] is not None
-                and job['score'] >= cfg['min_score'] and job.get('analysis_source') != 'local_fallback'
+                and (job['score'] >= cfg['min_score'] or _near_miss_ok(job, cfg))
+                and job.get('analysis_source') != 'local_fallback'
                 and job.get('description', '').strip() and '【列表摘要' not in job['description']
                 and not job['approved']):
             # Same employer, different posting: do not open a second conversation.
@@ -428,13 +447,15 @@ def run_once():
         last = engine.last_attempt(cfg['mode'])
         if last and (datetime.now(timezone.utc) - datetime.fromisoformat(last['created_at'])).total_seconds() < cfg['interval_seconds']:
             return {'status': 'interval', 'processed': 0}
+        # 库存枯竭时队列门槛跟着放到 40，真正的把关在 approve（研发岗才算近义匹配）。
+        queue_min = 40 if engine.get_rules()['data'].get('accept_near_miss') else cfg['min_score']
         # 先把已有库存入队：一开跑就去采集会白等几分钟，投递反而推迟。
         if cfg['auto_approve']:
             _auto_approve(cfg)
-            if not engine.queue(cfg['min_score'], cfg['mode']):
+            if not engine.queue(queue_min, cfg['mode']):
                 _enrich_matches(cfg)
                 _auto_approve(cfg)
-        queue = engine.queue(cfg['min_score'], cfg['mode'])
+        queue = engine.queue(queue_min, cfg['mode'])
         # 采集会独占浏览器几分钟，所以只在队列快见底时才去补货，别和投递抢时间。
         if cfg['auto_collect'] and len(queue) < 3 and time.monotonic() - _last_collect >= 1200:
             _last_collect = time.monotonic()
@@ -445,7 +466,7 @@ def run_once():
             except Exception as exc:
                 # A failed crawl must not stop the queue that is already analysed.
                 engine.log('collect_blocked', str(exc)[:300])
-        queue = engine.queue(cfg['min_score'], cfg['mode'])
+        queue = engine.queue(queue_min, cfg['mode'])
         if not queue:
             return {'status': 'idle', 'processed': 0}
         # live 模式下不发「薪资不知道」的岗位：先补一次详情，补不到就本轮暂缓。
@@ -471,7 +492,7 @@ def run_once():
                     # 补全事实会撤销原审核，这里立即重算一次并重新入队，避免空转一轮。
                     engine.analyze(jid=item['id'])
                     refreshed = engine._job(item['id']) or {}
-                    if (refreshed.get('score') or 0) >= cfg['min_score'] and \
+                    if ((refreshed.get('score') or 0) >= cfg['min_score'] or _near_miss_ok(refreshed, cfg)) and \
                             engine.match_job(data, engine.get_profile()['resume_text'],
                                              engine.get_rules()['data'])[0] >= 0:
                         engine.approve(item['id'])
@@ -494,7 +515,7 @@ def run_once():
                 return {'status': 'interval', 'processed': 0}
             if engine.match_job(item['data'], engine.get_profile()['resume_text'], engine.get_rules()['data'])[0] < 0:
                 return {'status': 'rules_changed', 'processed': 0}
-            if not any(j['id'] == item['id'] for j in engine.queue(current['min_score'], current['mode'])):
+            if not any(j['id'] == item['id'] for j in engine.queue(queue_min, current['mode'])):
                 return {'status': 'review_required', 'processed': 0}
             engine.record_attempt(item['id'], cfg['mode'], 'pending', '已预留执行记录，防止重复沟通')
         if cfg['mode'] == 'dry_run':
@@ -582,6 +603,35 @@ def start_worker(stop_event=None):
     return thread
 
 
+def start_supervisor(limit=420, interval=15):
+    """Kill a frozen Chrome when a single browser call overruns its budget.
+
+    Playwright's own timeouts cannot rescue a frozen renderer or a stuck page.close(),
+    which leaves the single browser thread busy forever. Recovering by restarting the
+    dedicated Chrome is safe: an in-flight greeting is already recorded as uncertain.
+    """
+
+    def watch():
+        while True:
+            time.sleep(interval)
+            try:
+                secs = _browser().busy_seconds()
+            except Exception:
+                continue
+            if secs <= limit:
+                continue
+            name = getattr(_browser(), 'busy_name', '') or 'browser'
+            engine.log('watch_recover', f'浏览器调用 {name} 卡住 {int(secs)} 秒，已强制重启浏览器')
+            try:
+                _browser().kill_chrome()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=watch, name='job-pilot-supervisor', daemon=True)
+    thread.start()
+    return thread
+
+
 @app.post('/api/run')
 @safe
 def run():
@@ -590,4 +640,5 @@ def run():
 
 if __name__ == '__main__':
     start_worker()
+    start_supervisor()
     app.run(host='127.0.0.1', port=int(os.getenv('JOB_PILOT_PORT', '8765')), debug=False, use_reloader=False)

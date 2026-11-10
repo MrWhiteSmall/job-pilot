@@ -188,7 +188,7 @@ class JobEngine:
                 if value != int(value):
                     raise ValidationError(f'{key} 必须是整数')
                 clean[key] = int(value)
-        for key in ('tiny_needs_funding', 'large_needs_foreign'):
+        for key in ('tiny_needs_funding', 'large_needs_foreign', 'accept_near_miss'):
             if key in rules:
                 clean[key] = bool(rules[key])
         if 'recruitment_type' in rules:

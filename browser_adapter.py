@@ -68,12 +68,50 @@ class BossBrowser:
         self.connection = None
         self.edge_endpoint = None
         self._opened = []
+        self.busy_since = None
+        self.busy_name = ''
         atexit.register(self.close)
 
     def _call(self, fn, *args):
         # No Future timeout: timing out could leave an irreversible click running
         # while the caller starts another attempt. Playwright has bounded timeouts.
-        return self.executor.submit(fn, *args).result()
+        self.busy_since = time.monotonic()
+        self.busy_name = getattr(fn, '__name__', 'operation')
+        try:
+            return self.executor.submit(fn, *args).result()
+        finally:
+            self.busy_since = None
+            self.busy_name = ''
+
+    def busy_seconds(self):
+        """How long the current browser call has been running (0 when idle)."""
+        if not self.busy_since:
+            return 0.0
+        return time.monotonic() - self.busy_since
+
+    def kill_chrome(self):
+        """Hard-stop the dedicated profile's Chrome. Used when a call stops responding.
+
+        Playwright's timeout cannot rescue a frozen renderer or a stuck page.close(),
+        so the supervisor kills the dedicated Chrome; the hung call then errors out and
+        the worker retries on a fresh window (same profile, login preserved).
+        """
+        import subprocess
+        script = (
+            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+            "Where-Object { $_.CommandLine -like '*boss-chrome-profile*' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        )
+        try:
+            subprocess.run(['powershell', '-NoProfile', '-Command', script],
+                           capture_output=True, timeout=60)
+        except Exception:
+            pass
+        self.context = None
+        self.connection = None
+        self.playwright = None
+        self.edge_endpoint = None
+        self._opened = []
 
     def _launch_edge(self, url='about:blank'):
         import socket
@@ -190,6 +228,12 @@ class BossBrowser:
             if not self.connection.contexts:
                 raise RuntimeError('Chrome 已连接但尚未建立页面上下文，请点击「连接 BOSS」重开窗口。')
             self.context = self.connection.contexts[0]
+            # 兜底：所有没写 timeout 的 Playwright 调用也不会无限等下去。
+            try:
+                self.context.set_default_timeout(20000)
+                self.context.set_default_navigation_timeout(30000)
+            except Exception:
+                pass
             self._mask(self.context)
             # 之前进程崩溃会留下几十个僵尸标签页，全挤在同一个 Chrome 里，清理它们
             # 又慢又容易卡住（close 会等 CDP 回应）。开新连接时只做一次、限量的清尾。
@@ -359,7 +403,7 @@ class BossBrowser:
                             break
                         debug_path = ROOT / 'data' / 'screenshots' / 'collect-blocked.png'
                         debug_path.parent.mkdir(parents=True, exist_ok=True)
-                        page.screenshot(path=str(debug_path))
+                        page.screenshot(path=str(debug_path), timeout=15000)
                         if '登录' in body and not cards.count():
                             raise RuntimeError('尚未获得可读取的岗位列表，请先在独立浏览器登录 BOSS。') from None
                         continue
@@ -475,7 +519,7 @@ class BossBrowser:
         self._check(page)
         jd = page.locator('.job-sec-text, .job-detail .text').first
         jd.wait_for(state='visible', timeout=6000)
-        description = jd.inner_text().strip()
+        description = jd.inner_text(timeout=8000).strip()
         if description:
             item['description'] = description[:15000]
         if not item.get('salary'):
@@ -485,7 +529,7 @@ class BossBrowser:
                 block = page.locator(selector).first
                 if not block.count():
                     continue
-                value = block.inner_text().strip()
+                value = block.inner_text(timeout=5000).strip()
                 if value and not re.search('[\ue000-\uf8ff]', value) and re.fullmatch(r'\d{1,3}\s*[-–~]\s*\d{1,3}K(?:·\d{1,2}薪)?|面议', value):
                     item['salary'] = value
                     break
@@ -637,7 +681,7 @@ class BossBrowser:
             if company:
                 for index in range(min(total, 20)):
                     item = chats.nth(index)
-                    if company in (item.inner_text() or ''):
+                    if company in (item.inner_text(timeout=3000) or ''):
                         target = item
                         break
             target = target or chats.first
