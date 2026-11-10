@@ -191,11 +191,28 @@ class BossBrowser:
                 raise RuntimeError('Chrome 已连接但尚未建立页面上下文，请点击「连接 BOSS」重开窗口。')
             self.context = self.connection.contexts[0]
             self._mask(self.context)
+            # 之前进程崩溃会留下几十个僵尸标签页，全挤在同一个 Chrome 里，清理它们
+            # 又慢又容易卡住（close 会等 CDP 回应）。开新连接时只做一次、限量的清尾。
+            self._trim_startup_tabs(self.context)
         except Exception:
             self._detach()
             self.edge_endpoint = None
             raise
         return self.context
+
+    def _trim_startup_tabs(self, context, keep=1):
+        """Close tabs left behind by crashed runs, bounded so a stuck close cannot hang startup."""
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return
+        for page in pages[:max(0, len(pages) - keep)][:24]:
+            try:
+                if page.is_closed():
+                    continue
+                page.close()
+            except Exception:
+                break
 
     @staticmethod
     def _mask(context):
@@ -411,7 +428,10 @@ class BossBrowser:
                 page.close()
             except Exception:
                 pass
-            self._opened.remove(page)
+            try:
+                self._opened.remove(page)
+            except ValueError:
+                pass
 
     def tidy(self, keep=1):
         return self._call(self._tidy, keep)

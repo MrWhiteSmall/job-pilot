@@ -550,8 +550,14 @@ def start_worker(stop_event=None):
                 count = engine.day_usage('live')
                 cfg_now = engine.get_automation()
                 # Human-like burst pacing: after every 18 real greetings, rest for 4–7 minutes.
+                # Only cool down inside a running stretch — a restart at 18/36/... must not
+                # buy another rest, that just looks like the program stalled.
+                last = engine.last_attempt('live')
+                recent = bool(last) and (
+                    datetime.now(timezone.utc) - datetime.fromisoformat(last['created_at'])
+                ).total_seconds() < 180
                 if (cfg_now['enabled'] and cfg_now['mode'] == 'live' and count and count % 18 == 0
-                        and count != cooled_at):
+                        and recent and count != cooled_at):
                     cooled_at = count
                     engine.log('cooldown', f'已连续沟通 {count} 次，休息一会儿再继续')
                     stop_event.wait(random.uniform(240, 420))
