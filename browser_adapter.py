@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse, urlencode
 import atexit
+import json
 import random
 import re
 import time
@@ -373,68 +374,105 @@ class BossBrowser:
                        ('degree', '204,205,206')]
             self._collect_round = getattr(self, '_collect_round', 0) + 1
             plans = [filters] if self._collect_round % 2 == 0 else [[]]
-            # Rotate the keyword list between runs so repeated collections cover new ground
-            # instead of re-reading the same first six queries.
+            # Rotate the keyword list between runs so repeated collections cover new ground.
             offset = (self._collect_round * 3) % max(1, len(titles))
             titles = titles[offset:] + titles[:offset]
+            # 每个「关键词 x 城市」抓满 collect_pages 页才换下一个词；页码游标落盘，
+            # 下一轮从上次停下的位置继续，避免每轮都重抓第 1-2 页的同一批卡片。
+            cursor_path = ROOT / 'data' / 'collect-cursor.json'
+            try:
+                cursor = json.loads(cursor_path.read_text('utf-8'))
+                if not isinstance(cursor, dict):
+                    cursor = {}
+            except Exception:
+                cursor = {}
+            page_cap = int(rules.get('collect_pages') or 10)
+            budget = float(rules.get('collect_budget') or 360)
             visits = 0
             started = time.time()
+
+            def _save_cursor():
+                try:
+                    cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    cursor_path.write_text(json.dumps(cursor, ensure_ascii=False, indent=0), 'utf-8')
+                except Exception:
+                    pass
+
             for active in plans:
                 if jobs:
                     break
-                for city_code, query, page_no in [(c, q, n) for q in titles[:10] for n in (1, 2) for c in codes]:
-                    if visits >= 8 or time.time() - started > 330:
+                for city_code, query in [(c, q) for q in titles[:10] for c in codes]:
+                    if time.time() - started > budget:
                         break
-                    visits += 1
-                    page.bring_to_front()
-                    params = {'city': city_code, 'query': query}
-                    if active:
-                        params.update(dict(active))
-                    if page_no > 1:
-                        params['page'] = page_no
-                    self._goto(page, 'https://www.zhipin.com/web/geek/jobs?' + urlencode(params), timeout=25000)
-                    self._check(page)
-                    cards = page.locator('.job-card-wrapper, .job-card-box')
-                    try:
-                        page.wait_for_function("() => Array.from(document.querySelectorAll('.job-card-box a[href*=\"/job_detail/\"], .job-card-wrapper a[href*=\"/job_detail/\"]')).some(a => a.textContent.trim())", timeout=30000)
-                    except Exception:
-                        body = self._check(page)
-                        if jobs:
+                    key = f'{query}|{city_code}'
+                    start_page = int(cursor.get(key) or 1)
+                    if start_page < 1 or start_page > page_cap:
+                        start_page = 1
+                    went_pages = 0
+                    for page_no in range(start_page, page_cap + 1):
+                        if time.time() - started > budget:
                             break
-                        debug_path = ROOT / 'data' / 'screenshots' / 'collect-blocked.png'
-                        debug_path.parent.mkdir(parents=True, exist_ok=True)
-                        page.screenshot(path=str(debug_path), timeout=15000)
-                        if '登录' in body and not cards.count():
-                            raise RuntimeError('尚未获得可读取的岗位列表，请先在独立浏览器登录 BOSS。') from None
-                        continue
-                    items = cards.evaluate_all("""cards => cards.slice(0, 15).map(c => {
-                        const get = s => c.querySelector(s)?.textContent?.trim() || '';
-                        const a = c.querySelector('a[href*="/job_detail/"]');
-                        const tags = Array.from(c.querySelectorAll('.tag-list li')).map(e => e.textContent.trim());
-                        const education = tags.find(t => /^(学历不限|博士|硕士|本科|大专|高中|中专|初中)/.test(t)) || (tags[1] === '不限' ? '不限' : '');
-                        const experience = tags.find(t => /经验|年|在校|应届|实习/.test(t)) || '';
-                        const hiringText = (get('.job-name') + ' ' + experience);
-                        const softFresh = /(接受|欢迎|允许|不限|均可)\\s*应届/.test(hiringText);
-                        const hiringText2 = softFresh ? hiringText.replace(/(接受|欢迎|允许|不限|均可)\\s*应届/g, '') : hiringText;
-                        const recruitment = /实习/.test(hiringText2) ? 'internship' : /应届|在校|校招|校园/.test(hiringText2) ? 'campus' : /经验不限|年|社招/.test(hiringText2) ? 'social' : '';
-                        const size = c.innerText.match(/(?:\\d[\\d,]*\\s*[-–~至]\\s*\\d[\\d,]*|\\d[\\d,]*以上)\\s*人/);
-                        return {education, experience, recruitment_type:recruitment, company_size:size?.[0] || '', title:get('.job-name') || a?.textContent?.trim() || '',
-                            company:get('.company-name') || get('.boss-name'),
-                            city:get('.job-area') || get('.job-area-wrapper') || get('.company-location'),
-                            salary:get('.salary') || get('.job-salary'),url:a?.href || '',description:c.innerText,
-                            source:'BOSS直聘'};
-                    })""")
-                    for item in items:
-                        if not item['title'] or not item['url']:
+                        visits += 1
+                        page.bring_to_front()
+                        params = {'city': city_code, 'query': query}
+                        if active:
+                            params.update(dict(active))
+                        if page_no > 1:
+                            params['page'] = page_no
+                        try:
+                            self._goto(page, 'https://www.zhipin.com/web/geek/jobs?' + urlencode(params), timeout=25000)
+                            self._check(page)
+                        except Exception:
+                            if jobs:
+                                break
                             continue
-                        # Card text is factual but incomplete. The scorer must not infer missing JD.
-                        item['description'] = '【列表摘要，完整要求请查看原岗位】\n' + item['description']
-                        if re.search('[\ue000-\uf8ff]', item['salary']):
-                            item['salary'] = ''
-                            item['description'] += '\n【薪资使用自定义字体，需打开原岗位核验】'
-                        jobs.append(item)
-                if jobs:
-                    break
+                        cards = page.locator('.job-card-wrapper, .job-card-box')
+                        try:
+                            page.wait_for_function("() => Array.from(document.querySelectorAll('.job-card-box a[href*=\"/job_detail/\"], .job-card-wrapper a[href*=\"/job_detail/\"]')).some(a => a.textContent.trim())", timeout=30000)
+                        except Exception:
+                            body = self._check(page)
+                            debug_path = ROOT / 'data' / 'screenshots' / 'collect-blocked.png'
+                            debug_path.parent.mkdir(parents=True, exist_ok=True)
+                            page.screenshot(path=str(debug_path), timeout=15000)
+                            if '登录' in body and not cards.count():
+                                raise RuntimeError('尚未获得可读取的岗位列表，请先在独立浏览器登录 BOSS。') from None
+                            break
+                        items = cards.evaluate_all("""cards => cards.slice(0, 15).map(c => {
+                            const get = s => c.querySelector(s)?.textContent?.trim() || '';
+                            const a = c.querySelector('a[href*="/job_detail/"]');
+                            const tags = Array.from(c.querySelectorAll('.tag-list li')).map(e => e.textContent.trim());
+                            const education = tags.find(t => /^(学历不限|博士|硕士|本科|大专|高中|中专|初中)/.test(t)) || (tags[1] === '不限' ? '不限' : '');
+                            const experience = tags.find(t => /经验|年|在校|应届|实习/.test(t)) || '';
+                            const hiringText = (get('.job-name') + ' ' + experience);
+                            const softFresh = /(接受|欢迎|允许|不限|均可)\\s*应届/.test(hiringText);
+                            const hiringText2 = softFresh ? hiringText.replace(/(接受|欢迎|允许|不限|均可)\\s*应届/g, '') : hiringText;
+                            const recruitment = /实习/.test(hiringText2) ? 'internship' : /应届|在校|校招|校园/.test(hiringText2) ? 'campus' : /经验不限|年|社招/.test(hiringText2) ? 'social' : '';
+                            const size = c.innerText.match(/(?:\\d[\\d,]*\\s*[-–~至]\\s*\\d[\\d,]*|\\d[\\d,]*以上)\\s*人/);
+                            return {education, experience, recruitment_type:recruitment, company_size:size?.[0] || '', title:get('.job-name') || a?.textContent?.trim() || '',
+                                company:get('.company-name') || get('.boss-name'),
+                                city:get('.job-area') || get('.job-area-wrapper') || get('.company-location'),
+                                salary:get('.salary') || get('.job-salary'),url:a?.href || '',description:c.innerText,
+                                source:'BOSS直聘'};
+                        })""")
+                        page_items = 0
+                        for item in items:
+                            if not item['title'] or not item['url']:
+                                continue
+                            # Card text is factual but incomplete. The scorer must not infer missing JD.
+                            item['description'] = '【列表摘要，完整要求请查看原岗位】\n' + item['description']
+                            if re.search('[\ue000-\uf8ff]', item['salary']):
+                                item['salary'] = ''
+                                item['description'] += '\n【薪资使用自定义字体，需打开原岗位核验】'
+                            jobs.append(item)
+                            page_items += 1
+                        went_pages += 1
+                        # 翻到空页说明这个词已经到底，下一轮从第 1 页重新开始。
+                        if not page_items:
+                            cursor[key] = 1
+                            break
+                        cursor[key] = page_no + 1 if page_no < page_cap else 1
+                        _save_cursor()
+                    _save_cursor()
             unique = list({j['url']: j for j in jobs}.values())
             # Read a bounded number of detail pages. The remaining cards explicitly
             # retain their summary label, rather than inventing missing requirements.

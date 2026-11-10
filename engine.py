@@ -175,7 +175,7 @@ class JobEngine:
                     raise ValidationError(f'{key} 必须是字符串数组（最多{cap}项）')
                 clean[key] = list(dict.fromkeys(x.strip() for x in values if x.strip()))
                 if key == 'collect_titles':
-                    clean[key] = clean[key][:20]
+                    clean[key] = clean[key][:40]
         for key in ('min_salary', 'max_salary'):
             if key in rules:
                 clean[key] = number(rules[key], key, 0, 1000)
