@@ -121,7 +121,6 @@ class JobEngine:
             CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL UNIQUE, mode TEXT NOT NULL, outcome TEXT NOT NULL, detail TEXT, created_at TEXT NOT NULL);
             INSERT OR IGNORE INTO rules(id,data,updated_at) VALUES(1,'{}',datetime('now'));
             INSERT OR IGNORE INTO automation(id) VALUES(1);
-            UPDATE automation SET enabled=0 WHERE id=1;
             ''')
             for table, column, ddl in [('jobs', 'analysis', "TEXT NOT NULL DEFAULT '{}'"),
                                         ('automation', 'auto_approve', 'INTEGER NOT NULL DEFAULT 0'),
@@ -188,7 +187,7 @@ class JobEngine:
                 if value != int(value):
                     raise ValidationError(f'{key} 必须是整数')
                 clean[key] = int(value)
-        for key in ('tiny_needs_funding', 'large_needs_foreign', 'accept_near_miss'):
+        for key in ('tiny_needs_funding', 'large_needs_foreign', 'accept_near_miss', 'allow_unknown_salary'):
             if key in rules:
                 clean[key] = bool(rules[key])
         if 'recruitment_type' in rules:

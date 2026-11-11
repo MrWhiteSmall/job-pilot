@@ -115,11 +115,15 @@ def test_profile_or_rules_change_revokes_approval(tmp_path, monkeypatch):
 
 
 def test_restart_defaults_to_paused(tmp_path):
+    """新建引擎不能顺手停掉正在跑的托管（工具脚本会误杀投递）。"""
     db = str(tmp_path / "restart.sqlite")
     first = JobEngine(db)
     first.set_automation({"enabled": True, "mode": "dry_run", "interval_seconds": 10})
     second = JobEngine(db)
-    assert second.get_automation()["enabled"] is False
+    assert second.get_automation()["enabled"] is True
+    # 「重启即暂停」由 app.py 启动流程显式调用。
+    second.set_automation({"enabled": False})
+    assert JobEngine(db).get_automation()["enabled"] is False
 
 
 def test_hard_filter_rejects_before_ai(tmp_path, monkeypatch):

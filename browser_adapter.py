@@ -367,11 +367,9 @@ class BossBrowser:
             codes = [CITY_CODES[c] for c in cities if c in CITY_CODES]
             if not codes:
                 raise RuntimeError(f'采集器暂不支持这些城市：{cities}。可用城市：{"、".join(CITY_CODES)}')
-            # Server-side filters cut the noise (tiny teams, campus, senior-only).
-            # Salary is deliberately NOT filtered here: BOSS's band is coarse, and the local
-            # rule (starting salary 20-30K) already decides. An empty result retries unfiltered.
-            filters = [('scale', '303,304'), ('experience', '104,105,106'),
-                       ('degree', '204,205,206')]
+            # 注意：公司规模和学历不在服务端过滤——规则已经放宽到 0-9999 人
+            # （0-20 人看融资、千人以上看外资），在 BOSS 侧先筛掉会直接漏掉这些岗位。
+            filters = [('experience', '104,105,106')]
             self._collect_round = getattr(self, '_collect_round', 0) + 1
             plans = [filters] if self._collect_round % 2 == 0 else [[]]
             # Rotate the keyword list between runs so repeated collections cover new ground.
@@ -387,7 +385,10 @@ class BossBrowser:
             except Exception:
                 cursor = {}
             page_cap = int(rules.get('collect_pages') or 10)
-            budget = float(rules.get('collect_budget') or 360)
+            # 单城市（杭州）时一轮把所有关键词都排进去；多城市时才截前 10 个，
+            # 否则翻页预算是固定的，词太多会永远轮不到后半段。
+            slice_n = len(titles) if len(codes) == 1 else 10
+            budget = float(rules.get('collect_budget') or 240)
             visits = 0
             started = time.time()
 
@@ -401,7 +402,7 @@ class BossBrowser:
             for active in plans:
                 if jobs:
                     break
-                for city_code, query in [(c, q) for q in titles[:10] for c in codes]:
+                for city_code, query in [(c, q) for q in titles[:slice_n] for c in codes]:
                     if time.time() - started > budget:
                         break
                     key = f'{query}|{city_code}'
@@ -478,8 +479,8 @@ class BossBrowser:
             # retain their summary label, rather than inventing missing requirements.
             detail = self._new_page()
             try:
-                for item in unique[:6]:
-                    if time.time() - started > 420:
+                for item in unique[:10]:
+                    if time.time() - started > 330:
                         break
                     try:
                         self._read_detail(detail, item)

@@ -20,6 +20,12 @@ BASE = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=str(BASE / 'public'), static_url_path='')
 app.config['MAX_CONTENT_LENGTH'] = 3 * 1024 * 1024
 engine = JobEngine(os.getenv('JOB_PILOT_DB', str(BASE / 'data' / 'job_pilot.sqlite3')))
+# 进程重启默认暂停托管；但只有 app.py 自己做这件事，工具脚本 new JobEngine 不会再误停投递。
+if os.getenv('JOB_PILOT_KEEP_ENABLED') != '1':
+    try:
+        engine.set_automation({'enabled': False})
+    except Exception:
+        pass
 _run_lock = threading.Lock()
 _last_collect = 0.0
 
@@ -412,18 +418,22 @@ def _ensure_facts(job):
     return fresh or job
 
 
-def _enrich_matches(cfg, limit=5):
+def _enrich_matches(cfg, limit=10):
     """Read the full posting for near-miss matches so they can be auto-approved."""
     pending = [j for j in engine.state()['jobs']
                if j['status'] in ('matched', 'simulated') and not j['approved']
                and ('【列表摘要' in str(j.get('description') or '') or not str(j.get('description') or '').strip())]
-    if not pending:
+    # 已审核但薪资没读到的：发送前会卡在补全上，提前补掉，别在投递时现读。
+    no_salary = [j for j in engine.state()['jobs']
+                 if j['status'] == 'approved' and not str(j.get('salary') or '').strip()]
+    if not pending and not no_salary:
         return 0
     # Score can only rise once the full JD is in hand, so do not filter by score here.
     pending.sort(key=lambda j: (-(j.get('score') or 0), j['id']))
+    candidates = (no_salary + pending)[:limit]
     targets = [{key: j.get(key, '') for key in ('external_id', 'title', 'company', 'city', 'salary', 'description',
                                                 'url', 'source', 'company_size', 'education',
-                                                'experience', 'recruitment_type')} for j in pending[:limit]]
+                                                'experience', 'recruitment_type')} for j in candidates]
     try:
         done = _browser().enrich(targets, limit)
         engine.import_jobs([j for j in done if not j.get('error')])
@@ -496,6 +506,11 @@ def run_once():
                             engine.match_job(data, engine.get_profile()['resume_text'],
                                              engine.get_rules()['data'])[0] >= 0:
                         engine.approve(item['id'])
+                    break
+                # 薪资面议/加了字体混淆的情况：规则允许时照常沟通，但留痕方便复盘。
+                if engine.get_rules()['data'].get('allow_unknown_salary', False):
+                    item = candidate
+                    engine.log('salary_unknown', '岗位未公开薪资，按规则继续沟通', candidate['id'])
                     break
                 _salary_hold.add(candidate['id'])
                 engine.log('enrich_hold', '薪资仍无法确认，暂缓该岗位，先投下一条', candidate['id'])
