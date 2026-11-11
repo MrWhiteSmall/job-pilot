@@ -187,7 +187,8 @@ class JobEngine:
                 if value != int(value):
                     raise ValidationError(f'{key} 必须是整数')
                 clean[key] = int(value)
-        for key in ('tiny_needs_funding', 'large_needs_foreign', 'accept_near_miss', 'allow_unknown_salary'):
+        for key in ('tiny_needs_funding', 'large_needs_foreign', 'accept_near_miss', 'allow_unknown_salary',
+                    'dedupe_companies'):
             if key in rules:
                 clean[key] = bool(rules[key])
         if 'recruitment_type' in rules:
@@ -633,7 +634,12 @@ class JobEngine:
         return re.sub(r'[\s\u3000]+', '', str(name or ''))
 
     def contacted_companies(self, within_days=30):
-        """Companies already greeted for real inside the window, keyed by normalised name."""
+        """Companies already greeted inside the window, keyed by normalised name.
+
+        dedupe_companies 关闭时返回空集合：只按岗位（URL/attempt）去重，不做公司级拦截。
+        """
+        if not self.get_rules()['data'].get('dedupe_companies', True):
+            return set()
         cutoff = (datetime.now(SHANGHAI) - timedelta(days=within_days)).astimezone(timezone.utc).isoformat()
         with self._connect() as db:
             rows = db.execute("SELECT j.data FROM attempts a JOIN jobs j ON j.id=a.job_id "
