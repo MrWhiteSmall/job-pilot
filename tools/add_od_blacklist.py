@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 DB = os.getenv('JOB_PILOT_DB') or str(ROOT / 'data' / 'job_pilot.sqlite3')
 
-EXTRA = ['咏鹭科技', '咏鹭', 'od岗', 'od岗位', '外包岗']
+EXTRA = ['咏鹭科技', '咏鹭', '勇冠睿智', '勇冠', 'od岗', 'od岗位', '外包岗']
 
 from engine import JobEngine  # noqa: E402
 
