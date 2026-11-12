@@ -117,6 +117,50 @@ class BossBrowser:
             return 0.0
         return time.monotonic() - self.busy_since
 
+    def _close_page(self, page):
+        """Close a tab through the DevTools HTTP endpoint.
+
+        `page.close()` can block forever on a frozen renderer, which used to wedge the
+        single worker thread until the supervisor killed Chrome. The HTTP endpoint has
+        its own timeout, so a stuck tab can no longer hang the queue.
+        """
+        if page is None:
+            return False
+        try:
+            url = page.url
+        except Exception:
+            url = ''
+        endpoint = getattr(self, 'edge_endpoint', None) or ''
+        match = re.search(r':(\d+)/?$', endpoint)
+        if not match:
+            # No DevTools endpoint (tests, or a cold start): plain close is safe there.
+            try:
+                page.close()
+            except Exception:
+                pass
+            return True
+        base = f'http://127.0.0.1:{match.group(1)}'
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            targets = json.loads(opener.open(base + '/json/list', timeout=3).read().decode())
+        except Exception:
+            return False
+        for target in targets:
+            if target.get('type') != 'page':
+                continue
+            if url and target.get('url') != url:
+                continue
+            try:
+                opener.open(f"{base}/json/close/{target['id']}", timeout=3).read()
+            except Exception:
+                return False
+            try:
+                self._opened.remove(page)
+            except ValueError:
+                pass
+            return True
+        return False
+
     def kill_chrome(self):
         """Hard-stop the dedicated profile's Chrome. Used when a call stops responding.
 
@@ -282,7 +326,7 @@ class BossBrowser:
             try:
                 if page.is_closed():
                     continue
-                page.close()
+                self._close_page(page)
             except Exception:
                 break
 
@@ -327,7 +371,7 @@ class BossBrowser:
                     'reason': '' if logged_in else '未检测到登录态，请先在投递用的 Chrome 窗口扫码登录'}
         finally:
             try:
-                page.close()
+                self._close_page(page)
             except Exception:
                 pass
 
@@ -502,9 +546,9 @@ class BossBrowser:
                         _save_cursor()
                     _save_cursor()
             # 关键词池在杭州已经翻到底：再抓一页推荐流，BOSS 会掺进搜索覆盖不到的岗位。
-            if time.time() - started < budget and len(jobs) < 6:
+            if time.time() - started < budget:
                 try:
-                    self._goto(page, 'https://www.zhipin.com/web/geek/recommend', timeout=25000)
+                    self._goto(page, 'https://www.zhipin.com/web/geek/recommend', timeout=25000, attempts=1)
                     page.wait_for_timeout(3000)
                     self._check(page)
                     for item in page.locator('.job-card-wrapper, .job-card-box').evaluate_all("""cards => cards.slice(0, 15).map(c => {
@@ -538,10 +582,10 @@ class BossBrowser:
                         # Cards are still real and remain labeled as incomplete.
                         break
             finally:
-                detail.close()
+                self._close_page(detail)
             return unique
         finally:
-            page.close()
+            self._close_page(page)
             self._sweep()
 
     def _sweep(self, keep=0):
@@ -557,7 +601,7 @@ class BossBrowser:
         self._opened = alive
         for page in alive[:max(0, len(alive) - keep)]:
             try:
-                page.close()
+                self._close_page(page)
             except Exception:
                 pass
             try:
@@ -574,7 +618,7 @@ class BossBrowser:
         closed = 0
         for page in list(context.pages)[max(1, keep):]:
             try:
-                page.close()
+                self._close_page(page)
                 closed += 1
             except Exception:
                 pass
@@ -665,7 +709,7 @@ class BossBrowser:
                     done.append({'url': item.get('url', ''), 'error': str(exc).splitlines()[0][:200]})
                 page.wait_for_timeout(700)
         finally:
-            page.close()
+            self._close_page(page)
             self._sweep()
         return done
 
@@ -748,7 +792,7 @@ class BossBrowser:
         finally:
             # Keep uncertain pages for the user's inspection.
             if not clicked:
-                page.close()
+                self._close_page(page)
 
     def send_followup(self, company, text):
         return self._call(self._send_followup, company, text)
@@ -795,7 +839,7 @@ class BossBrowser:
             return {'status': 'sent' if ok else 'uncertain',
                     'message': '招呼语补充消息已发送' if ok else '补充消息未确认，请人工核对'}
         finally:
-            page.close()
+            self._close_page(page)
             self._sweep(keep=0)
 
     def chat_preview(self, limit=15):
@@ -814,7 +858,7 @@ class BossBrowser:
                     'items': [re.sub(r'\s+', ' ', x).strip()[:120] for x in items[:limit]],
                     'preview': re.sub(r'\s+', ' ', body)[:300]}
         finally:
-            page.close()
+            self._close_page(page)
             self._sweep(keep=0)
 
     def close(self):
