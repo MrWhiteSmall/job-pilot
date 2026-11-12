@@ -621,7 +621,7 @@ class JobEngine:
         return len(preferred) + 1
 
     def queue(self, min_score=0, mode=None):
-        sql = "SELECT j.*,d.text,d.approved FROM jobs j JOIN drafts d ON d.job_id=j.id WHERE d.approved=1 AND j.status NOT IN ('sent','blocked','uncertain','pending') AND j.score>=? AND NOT EXISTS(SELECT 1 FROM attempts a WHERE a.job_id=j.id AND a.mode='live' AND a.outcome IN ('sent','pending','uncertain','blocked'))"
+        sql = "SELECT j.*,d.text,d.approved FROM jobs j JOIN drafts d ON d.job_id=j.id WHERE d.approved=1 AND j.status NOT IN ('sent','blocked','uncertain','pending') AND j.score>=? AND NOT EXISTS(SELECT 1 FROM attempts a WHERE a.job_id=j.id AND a.mode='live')"
         args = [min_score]
         if mode == 'dry_run':
             sql += ' AND NOT EXISTS(SELECT 1 FROM attempts a WHERE a.job_id=j.id)'
