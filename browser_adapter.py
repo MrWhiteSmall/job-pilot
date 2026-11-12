@@ -73,13 +73,40 @@ class BossBrowser:
         self.busy_name = ''
         atexit.register(self.close)
 
+    def _reset_thread(self):
+        """Replace the worker thread.
+
+        Playwright's sync API refuses to run in a thread that already owns an asyncio
+        loop ("Sync API inside the asyncio loop"). Once that happens the thread can
+        never drive the browser again, so hand the work to a fresh thread and drop the
+        stale driver handles (the real Chrome keeps running and is rediscovered).
+        """
+        old, self.executor = getattr(self, 'executor', None), ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix='boss-browser')
+        if old is not None:
+            try:
+                old.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        self.context = None
+        self.connection = None
+        self.playwright = None
+        self.edge_endpoint = None
+
     def _call(self, fn, *args):
         # No Future timeout: timing out could leave an irreversible click running
         # while the caller starts another attempt. Playwright has bounded timeouts.
         self.busy_since = time.monotonic()
         self.busy_name = getattr(fn, '__name__', 'operation')
         try:
-            return self.executor.submit(fn, *args).result()
+            try:
+                return self.executor.submit(fn, *args).result()
+            except Exception as exc:
+                if 'asyncio loop' not in str(exc):
+                    raise
+                print('[browser] worker thread wedged in an asyncio loop; replacing thread', flush=True)
+                self._reset_thread()
+                return self.executor.submit(fn, *args).result()
         finally:
             self.busy_since = None
             self.busy_name = ''
