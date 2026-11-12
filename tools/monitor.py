@@ -15,6 +15,14 @@ def state():
         return json.loads(resp.read().decode())
 
 
+def busy():
+    try:
+        with OPEN.open('http://127.0.0.1:8765/api/browser/busy', timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def main():
     LOG.parent.mkdir(parents=True, exist_ok=True)
     while True:
@@ -27,6 +35,9 @@ def main():
             last_sent = next((l['created_at'] for l in logs if l['event'] == 'sent'), '')
             line = (f"{stamp} sent={st['sent']} attempts={st['attempts']} queue={st['shortlisted']} "
                     f"jobs={st['jobs']} left={st['today_remaining']} enabled={auto['enabled']} mode={auto['mode']}")
+            b = busy()
+            if b.get('seconds'):
+                line += f" busy={b.get('name') or '?'}:{int(b['seconds'])}s"
             warn = ''
             if auto['enabled'] and auto['mode'] == 'live' and st['today_remaining'] > 0:
                 if last_sent:

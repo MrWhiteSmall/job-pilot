@@ -415,7 +415,7 @@ class BossBrowser:
             # 单城市（杭州）时一轮把所有关键词都排进去；多城市时才截前 10 个，
             # 否则翻页预算是固定的，词太多会永远轮不到后半段。
             slice_n = len(titles) if len(codes) == 1 else 10
-            budget = float(rules.get('collect_budget') or 240)
+            budget = float(rules.get('collect_budget') or 200)
             visits = 0
             started = time.time()
 
@@ -501,13 +501,35 @@ class BossBrowser:
                         cursor[key] = page_no + 1 if page_no < page_cap else 1
                         _save_cursor()
                     _save_cursor()
+            # 关键词池在杭州已经翻到底：再抓一页推荐流，BOSS 会掺进搜索覆盖不到的岗位。
+            if time.time() - started < budget and len(jobs) < 6:
+                try:
+                    self._goto(page, 'https://www.zhipin.com/web/geek/recommend', timeout=25000)
+                    page.wait_for_timeout(3000)
+                    self._check(page)
+                    for item in page.locator('.job-card-wrapper, .job-card-box').evaluate_all("""cards => cards.slice(0, 15).map(c => {
+                        const get = s => c.querySelector(s)?.textContent?.trim() || '';
+                        const a = c.querySelector('a[href*="/job_detail/"]');
+                        return {title: get('.job-name') || a?.textContent?.trim() || '', company: get('.company-name') || get('.boss-name'),
+                            city: get('.job-area') || get('.company-location'), salary: get('.salary') || get('.job-salary'),
+                            url: a?.href || '', description: c.innerText, source: 'BOSS直聘', education: '', experience: '', recruitment_type: ''};
+                    })"""):
+                        if not item['title'] or not item['url']:
+                            continue
+                        item['description'] = '【列表摘要，完整要求请查看原岗位】\n' + item['description']
+                        if re.search('[\ue000-\uf8ff]', item['salary']):
+                            item['salary'] = ''
+                            item['description'] += '\n【薪资使用自定义字体，需打开原岗位核验】'
+                        jobs.append(item)
+                except Exception:
+                    pass
             unique = list({j['url']: j for j in jobs}.values())
             # Read a bounded number of detail pages. The remaining cards explicitly
             # retain their summary label, rather than inventing missing requirements.
             detail = self._new_page()
             try:
-                for item in unique[:10]:
-                    if time.time() - started > 330:
+                for item in unique[:6]:
+                    if time.time() - started > 260:
                         break
                     try:
                         self._read_detail(detail, item)

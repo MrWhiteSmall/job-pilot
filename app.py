@@ -227,6 +227,13 @@ def browser_status():
     return result(_browser().status())
 
 
+@app.get('/api/browser/busy')
+def browser_busy():
+    """Which browser call is running and for how long (read-only, no Playwright call)."""
+    b = _browser()
+    return result({'name': b.busy_name, 'seconds': round(b.busy_seconds(), 1)})
+
+
 @app.post('/api/browser/collect')
 @safe
 def browser_collect():
@@ -386,6 +393,7 @@ def _auto_approve(cfg):
 
 
 _salary_hold = set()
+_enrich_hold = set()
 
 
 def _salary_of(job):
@@ -422,10 +430,12 @@ def _enrich_matches(cfg, limit=10):
     """Read the full posting for near-miss matches so they can be auto-approved."""
     pending = [j for j in engine.state()['jobs']
                if j['status'] in ('matched', 'simulated') and not j['approved']
+               and j['id'] not in _enrich_hold
                and ('【列表摘要' in str(j.get('description') or '') or not str(j.get('description') or '').strip())]
     # 已审核但薪资没读到的：发送前会卡在补全上，提前补掉，别在投递时现读。
     no_salary = [j for j in engine.state()['jobs']
-                 if j['status'] == 'approved' and not str(j.get('salary') or '').strip()]
+                 if j['status'] == 'approved' and not str(j.get('salary') or '').strip()
+                 and j['id'] not in _enrich_hold]
     if not pending and not no_salary:
         return 0
     # Score can only rise once the full JD is in hand, so do not filter by score here.
@@ -434,6 +444,10 @@ def _enrich_matches(cfg, limit=10):
     targets = [{key: j.get(key, '') for key in ('external_id', 'title', 'company', 'city', 'salary', 'description',
                                                 'url', 'source', 'company_size', 'education',
                                                 'experience', 'recruitment_type')} for j in candidates]
+    # 一条岗位只补一次；补不到的别再反复占用浏览器，交给发送前补全或人工核对。
+    _enrich_hold.update(j['id'] for j in candidates)
+    if len(_enrich_hold) > 800:
+        _enrich_hold.clear()
     try:
         done = _browser().enrich(targets, limit)
         engine.import_jobs([j for j in done if not j.get('error')])
