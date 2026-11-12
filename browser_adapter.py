@@ -10,6 +10,7 @@ import json
 import random
 import re
 import time
+import urllib.request
 
 ROOT = Path(__file__).resolve().parent
 
