@@ -2,11 +2,12 @@
   'use strict';
   const $ = (s, root = document) => root.querySelector(s);
   const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-  const state = { data: null, jobs: [], selected: null, filter: 'all', busy: false };
+  const state = { data: null, jobs: [], selected: null, filter: 'all', jobQuery: '', jobPage: 1, pageSize: 20, busy: false };
   const els = {
     app: $('#app'), stats: $('#statsGrid'), jobs: $('#jobList'), detail: $('#jobDetail'), jobCount: $('#jobCount'), logs: $('#logList'),
     toast: $('#toast'), resume: $('#resumeText'), resumeMeta: $('#resumeMeta'), mode: $('#modeSelect'), minScore: $('#minScore'), dailyLimit: $('#dailyLimit'), interval: $('#intervalSeconds'), enabled: $('#enabledToggle'), autoApprove: $('#autoApproveToggle'), autoCollect: $('#autoCollectToggle'), modeChip: $('#modeChip'),
-    title: $('#automationTitle'), autoText: $('#automationText'), banner: $('#statusBanner'), connection: $('#connection'), pause: $('#pauseBtn')
+    title: $('#automationTitle'), autoText: $('#automationText'), banner: $('#statusBanner'), connection: $('#connection'), pause: $('#pauseBtn'),
+    search: $('#jobSearch'), pager: $('#jobPager'), pageSize: $('#pageSize')
   };
   const rulesEls = { titles: $('#ruleTitles'), cities: $('#ruleCities'), districts: $('#ruleDistricts'), minSalary: $('#ruleMinSalary'), maxSalary: $('#ruleMaxSalary'), skills: $('#ruleSkills'), blacklist: $('#ruleBlacklist'), companyMin: $('#ruleCompanyMin'), companyMax: $('#ruleCompanyMax'), recruitment: $('#ruleRecruitment'), education: $('#ruleEducation'), greeting: $('#ruleGreeting') };
   function csvList(value) { return Array.isArray(value) ? value.join(', ') : safe(value); }
@@ -61,11 +62,34 @@
     ];
     els.stats.replaceChildren(...values.map(([label, value, note]) => { const card = make('div', undefined, 'stat'); card.append(make('span', label, 'stat-label'), make('div', value, 'stat-value'), make('span', note, 'stat-note')); return card; }));
   }
-  function filteredJobs() { return state.jobs.filter(j => state.filter === 'all' || (state.filter === 'shortlisted' ? ['shortlisted', 'approved'].includes(j.status) : ['pending', 'new', ''].includes(j.status))); }
+  function matchesQuery(job) {
+    const q = state.jobQuery.trim().toLowerCase();
+    if (!q) return true;
+    return [job.title, job.company, job.city, job.salary, statusLabel(job.status), job.raw && job.raw.experience]
+      .map(x => safe(x).toLowerCase()).join(' ').includes(q);
+  }
+  function filteredJobs() { return state.jobs.filter(j => (state.filter === 'all' || (state.filter === 'shortlisted' ? ['shortlisted', 'approved'].includes(j.status) : ['pending', 'new', ''].includes(j.status))) && matchesQuery(j)); }
+  function renderPager(total, pages) {
+    els.pager.replaceChildren();
+    if (!total) { els.pager.style.display = 'none'; return; }
+    els.pager.style.display = 'flex';
+    const prev = make('button', '‹ 上一页', 'pager-btn'); prev.type = 'button'; prev.disabled = state.jobPage <= 1;
+    const next = make('button', '下一页 ›', 'pager-btn'); next.type = 'button'; next.disabled = state.jobPage >= pages;
+    const info = make('span', `共 ${total} 条 · 第 ${state.jobPage} / ${pages} 页`, 'pager-info');
+    prev.addEventListener('click', () => { state.jobPage = Math.max(1, state.jobPage - 1); renderJobs(); });
+    next.addEventListener('click', () => { state.jobPage = Math.min(pages, state.jobPage + 1); renderJobs(); });
+    els.pager.append(prev, info, next);
+  }
   function renderJobs() {
-    const jobs = filteredJobs(); els.jobCount.textContent = String(state.jobs.length); els.jobs.replaceChildren();
-    if (!jobs.length) { const empty = make('div', undefined, 'empty-state'); empty.append(make('div', '◎', 'empty-icon'), make('strong', state.jobs.length ? '没有符合条件的岗位' : '岗位还没到达这里'), make('p', state.jobs.length ? '换一个筛选条件试试。' : '导入岗位数据，或连接 BOSS 采集杭州岗位，开始建立你的机会清单。')); els.jobs.append(empty); return; }
-    for (const job of jobs) { const row = make('article', undefined, `job-row${state.selected && state.selected.id === job.id ? ' selected' : ''}`); row.dataset.id = job.id; const logo = make('div', (job.company || '?').slice(0, 1), 'job-logo'); const middle = make('div'); middle.append(make('div', job.title, 'job-title'), make('div', job.company, 'job-company')); const meta = make('div', undefined, 'job-meta'); meta.append(make('div', job.score === null ? '待分析' : num(job.score) < 0 ? '硬筛拒绝' : `${Math.round(num(job.score))} / 100`, 'job-score'), make('div', `${job.city} · ${job.salary}`, 'job-city'), make('div', statusLabel(job.status), 'job-tag')); row.append(logo, middle, meta); row.addEventListener('click', () => selectJob(job.id)); els.jobs.append(row); }
+    const jobs = filteredJobs();
+    const pages = Math.max(1, Math.ceil(jobs.length / state.pageSize));
+    state.jobPage = Math.min(Math.max(1, state.jobPage), pages);
+    const start = (state.jobPage - 1) * state.pageSize;
+    const visible = jobs.slice(start, start + state.pageSize);
+    els.jobCount.textContent = String(state.jobs.length); els.jobs.replaceChildren();
+    if (!jobs.length) { const empty = make('div', undefined, 'empty-state'); empty.append(make('div', '◎', 'empty-icon'), make('strong', state.jobs.length ? '没有符合条件的岗位' : '岗位还没到达这里'), make('p', state.jobs.length ? '换一个筛选条件或关键词试试。' : '导入岗位数据，或连接 BOSS 采集杭州岗位，开始建立你的机会清单。')); els.jobs.append(empty); renderPager(0, 0); return; }
+    for (const job of visible) { const row = make('article', undefined, `job-row${state.selected && state.selected.id === job.id ? ' selected' : ''}`); row.dataset.id = job.id; const logo = make('div', (job.company || '?').slice(0, 1), 'job-logo'); const middle = make('div'); middle.append(make('div', job.title, 'job-title'), make('div', job.company, 'job-company')); const meta = make('div', undefined, 'job-meta'); meta.append(make('div', job.score === null ? '待分析' : num(job.score) < 0 ? '硬筛拒绝' : `${Math.round(num(job.score))} / 100`, 'job-score'), make('div', `${job.city} · ${job.salary}`, 'job-city'), make('div', statusLabel(job.status), 'job-tag')); row.append(logo, middle, meta); row.addEventListener('click', () => selectJob(job.id)); els.jobs.append(row); }
+    renderPager(jobs.length, pages);
   }
   function statusLabel(status) { return ({ contacted: '已沟通', communicated: '已沟通', sent: '已沟通', approved: '审核入队', matched: '已匹配', simulated: '模拟完成', blocked: '已阻断', uncertain: '待确认', rejected: '硬筛拒绝', shortlisted: '已筛选', pending: '待处理', new: '新岗位' })[status] || (status ? status : '待处理'); }
   function renderDetail() {
@@ -94,7 +118,9 @@
   async function runOnce() { if (state.busy) return; setBusy(true); try { const result = await api('/api/run', { method: 'POST', body: '{}' }); const status = safe(first(result, ['status'], first(result.data || {}, ['status'], 'unknown'))); toast(`单轮状态：${status}`); await load(); } catch (e) { toast(e.message, true); } finally { setBusy(false); } }
   async function importText(text) { setBusy(true); try { let jobs = null; try { const parsed = JSON.parse(text); if (Array.isArray(parsed)) jobs = parsed; else if (parsed && Array.isArray(parsed.jobs)) jobs = parsed.jobs; } catch (_) {} const body = jobs ? { jobs } : { text }; await api('/api/import', { method: 'POST', body: JSON.stringify(body) }); toast('导入完成'); await load(); } catch (e) { toast(`导入失败：${e.message}`, true); } finally { setBusy(false); } }
   function csvToText(text) { const lines = text.split(/\r?\n/).filter(Boolean); if (!lines.length) return text; const heads = lines.shift().split(',').map(x => x.trim()); const jobs = lines.map(line => { const vals = line.split(','); return heads.reduce((obj, key, i) => { obj[key] = (vals[i] || '').trim(); return obj; }, {}); }); return JSON.stringify({ jobs }); }
-  $$('.filter').forEach(button => button.addEventListener('click', () => { $$('.filter').forEach(x => x.classList.remove('active')); button.classList.add('active'); state.filter = button.dataset.filter; renderJobs(); }));
+  $$('.filter').forEach(button => button.addEventListener('click', () => { $$('.filter').forEach(x => x.classList.remove('active')); button.classList.add('active'); state.filter = button.dataset.filter; state.jobPage = 1; renderJobs(); }));
+  els.search.addEventListener('input', () => { state.jobQuery = els.search.value; state.jobPage = 1; renderJobs(); });
+  els.pageSize.addEventListener('change', () => { state.pageSize = Math.max(5, num(els.pageSize.value, 20)); state.jobPage = 1; renderJobs(); });
   $$('.nav-item').forEach(button => button.addEventListener('click', () => { $$('.nav-item').forEach(x => x.classList.remove('active')); button.classList.add('active'); $('#sidebar').classList.remove('open'); if (button.dataset.view === 'resume') els.resume.focus(); if (button.dataset.view === 'rules') $('#modeSelect').focus(); if (button.dataset.view === 'logs') $('#logList').scrollIntoView({ behavior: 'smooth' }); }));
   $$('[data-view="logs"]').forEach(button => button.addEventListener('click', () => $('#logList').scrollIntoView({ behavior: 'smooth' })));
   $('#openSidebar').addEventListener('click', () => $('#sidebar').classList.add('open')); $('#closeSidebar').addEventListener('click', () => $('#sidebar').classList.remove('open')); $('#refreshBtn').addEventListener('click', load);
