@@ -27,6 +27,9 @@ python app.py
 
 打开 <http://127.0.0.1:8765>，或双击 `启动投递领航.cmd`。服务只绑定 `127.0.0.1`，不接受外网访问。
 
+> 机器上装了多个 Python 时，先确认依赖装在了哪个解释器：
+> `python -c "import flask, playwright"`。报 `ModuleNotFoundError` 就用装好依赖的那个（例如 `D:\Python\python.exe app.py`），启动脚本也会先做这个检查。
+
 首次启动会在 `data/` 下建库并写入一组示例规则（杭州 / AI 应用 / 20–30K），**简历需要你自己填**：要么在「简历」页粘贴文本，要么启动前设置：
 
 ```powershell
@@ -132,6 +135,9 @@ Register-ScheduledTask -TaskName 'JobPilotEnsure' -Action $a -Trigger $t -Force
 
 **重启后不投了**
 这是设计：服务启动时会把托管写成暂停，需要你在页面上点「立即开始」（启动前会验登录态）。这样避免进程崩溃重启后无人值守地继续点。
+
+**启动就报 ModuleNotFoundError: No module named 'flask' / 'requests'**
+依赖不在当前 `python` 里。用 `python -m pip install -r requirements.txt` 装到当前解释器，或显式用装了依赖的解释器启动；`启动投递领航.cmd` 会检测并提示。
 
 **端口被占用 / 改了代码没生效**
 旧进程还活着。`Get-CimInstance Win32_Process -Filter "Name='python.exe'"` 看 `CreationDate`，`taskkill /PID <pid> /F` 后再启动。
