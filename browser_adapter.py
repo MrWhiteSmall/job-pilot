@@ -346,7 +346,12 @@ class BossBrowser:
 
     @staticmethod
     def _check(page):
-        text = page.locator('body').inner_text(timeout=10000)
+        try:
+            text = page.locator('body').inner_text(timeout=10000)
+        except Exception:
+            # A tab replaced or closed by the site yields no readable body; callers treat
+            # an empty body as "not verified" and move on instead of crashing the queue.
+            return ''
         if any(x in text for x in ['访问异常', '安全验证', '请完成验证', '滑动验证', '行为验证', '您的访问行为异常']):
             raise RuntimeError('BOSS 要求安全验证，请到浏览器手动完成，程序不会绕过验证。')
         if '扫码登录' in text or ('登录/注册' in text and '消息' not in text and '简历' not in text):
@@ -485,8 +490,10 @@ class BossBrowser:
                     for page_no in range(start_page, page_cap + 1):
                         if time.time() - started > budget:
                             break
+                        if getattr(page, 'is_closed', lambda: False)():
+                            page = self._new_page()
                         visits += 1
-                        page.bring_to_front()
+                        print(f'[collect] visit {visits} {query} p{page_no}', flush=True)
                         params = {'city': city_code, 'query': query}
                         if active:
                             params.update(dict(active))
@@ -494,7 +501,9 @@ class BossBrowser:
                             params['page'] = page_no
                         try:
                             self._goto(page, 'https://www.zhipin.com/web/geek/jobs?' + urlencode(params), timeout=25000)
+                            print('[collect] landed', flush=True)
                             self._check(page)
+                            print('[collect] checked', flush=True)
                         except Exception:
                             if jobs:
                                 break
@@ -504,12 +513,22 @@ class BossBrowser:
                             page.wait_for_function("() => Array.from(document.querySelectorAll('.job-card-box a[href*=\"/job_detail/\"], .job-card-wrapper a[href*=\"/job_detail/\"]')).some(a => a.textContent.trim())", timeout=30000)
                         except Exception:
                             body = self._check(page)
-                            debug_path = ROOT / 'data' / 'screenshots' / 'collect-blocked.png'
-                            debug_path.parent.mkdir(parents=True, exist_ok=True)
-                            page.screenshot(path=str(debug_path), timeout=15000)
-                            if '登录' in body and not cards.count():
+                            if not getattr(self, '_blocked_shot', False) and not getattr(page, 'is_closed', lambda: False)():
+                                self._blocked_shot = True
+                                debug_path = ROOT / 'data' / 'screenshots' / 'collect-blocked.png'
+                                debug_path.parent.mkdir(parents=True, exist_ok=True)
+                                try:
+                                    page.screenshot(path=str(debug_path), timeout=15000)
+                                except Exception:
+                                    pass
+                            try:
+                                empty = cards.count() == 0
+                            except Exception:
+                                empty = True
+                            if '登录' in body and empty:
                                 raise RuntimeError('尚未获得可读取的岗位列表，请先在独立浏览器登录 BOSS。') from None
                             break
+                        print('[collect] cards ready', flush=True)
                         items = cards.evaluate_all("""cards => cards.slice(0, 15).map(c => {
                             const get = s => c.querySelector(s)?.textContent?.trim() || '';
                             const a = c.querySelector('a[href*="/job_detail/"]');
