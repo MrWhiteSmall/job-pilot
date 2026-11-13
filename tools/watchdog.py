@@ -61,7 +61,7 @@ def kill_app():
 
 def start_app():
     subprocess.Popen(
-        ['cmd.exe', '/c', 'python app.py > data\\app.out.log 2>&1'],
+        ['cmd.exe', '/c', f'"{sys.executable}" app.py > data\\app.out.log 2>&1'],
         cwd=str(ROOT), creationflags=0x00000008,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

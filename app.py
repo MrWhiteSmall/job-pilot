@@ -632,7 +632,7 @@ def start_worker(stop_event=None):
     return thread
 
 
-def start_supervisor(limit=420, interval=15):
+def start_supervisor(limit=240, interval=15):
     """Kill a frozen Chrome when a single browser call overruns its budget.
 
     Playwright's own timeouts cannot rescue a frozen renderer or a stuck page.close(),
