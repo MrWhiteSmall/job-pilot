@@ -98,8 +98,8 @@ python app.py
 内置的限速是按「像个人」而非「尽可能多」设计的，不建议调快：
 
 - 点击「立即沟通」前随机等 2.6–5.2 秒；
-- 两次沟通间隔默认 70 秒，每轮再加 0–16 秒抖动；
-- 每 12 次真实沟通休息 5–12 分钟；
+- 两次沟通间隔默认 60 秒（`interval_seconds`，最低 60），每轮再加 0–16 秒抖动；
+- 每 18 次真实沟通休息 4–7 分钟；
 - 日上限默认受 BOSS 的 150 次限制，建议先设 20–50 观察一周；
 - 单窗口串行，不并发、不多账号；
 - 复用真实 Chrome + 专用 profile，抹掉 `navigator.webdriver` 与 console 探测特征；
@@ -108,7 +108,22 @@ python app.py
 - 单条结果无法确认（点击后页面没明确变化）：记为 `uncertain`，**不自动重试**，留给你人工核对；
 - 启动真实模式前会先检查登录态，未登录直接拒绝开启。
 
-想让它夜里自己跑，可另开一个窗口用看门狗：`pythonw tools/watchdog.py`。它只做两件事——进程挂了重拉、队列空了补采；遇到平台级暂停（额度/登录/验证码）不会擅自重开，只会记 `data/watchdog.log`。
+想让它夜里自己跑，可以起两个常驻小进程：
+
+```powershell
+pythonw tools/watchdog.py   # 接口不通/15 分钟没动作就重启并进行恢复托管；队列见底时补采
+pythonw tools/monitor.py    # 每 5 分钟把 attempts/sent/queue 写进 data/monitor.log
+```
+
+再叠加一层系统级保活（推荐，防止「看门狗自己挂了」）：`tools/ensure_alive.py` 检查 `/api/state` 与看门狗进程，缺哪个拉哪个。用管理员 PowerShell 注册成每 10 分钟一次的计划任务：
+
+```powershell
+$a = New-ScheduledTaskAction -Execute 'D:\Python\pythonw.exe' -Argument '"<项目路径>\tools\ensure_alive.py"'
+$t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 10) -RepetitionDuration (New-TimeSpan -Days 365)
+Register-ScheduledTask -TaskName 'JobPilotEnsure' -Action $a -Trigger $t -Force
+```
+
+遇到平台级暂停（额度/登录/验证码）看门狗不会擅自重开，只记 `data/watchdog.log` 并发桌面告警。
 
 ## 7. 常见问题
 
@@ -116,7 +131,7 @@ python app.py
 多为专用 Chrome 被杀或换了 profile。点「连接 BOSS」复用窗口；仍不行就关掉 `boss-chrome-profile` 对应的 Chrome 进程再重连。
 
 **重启后不投了**
-这是设计：`_init_db` 会把 `enabled` 置 0。页面上点「立即开始」即可，启动前会验登录。
+这是设计：服务启动时会把托管写成暂停，需要你在页面上点「立即开始」（启动前会验登录态）。这样避免进程崩溃重启后无人值守地继续点。
 
 **端口被占用 / 改了代码没生效**
 旧进程还活着。`Get-CimInstance Win32_Process -Filter "Name='python.exe'"` 看 `CreationDate`，`taskkill /PID <pid> /F` 后再启动。
@@ -141,7 +156,9 @@ engine.py            SQLite 存储、硬筛、打分、队列、去重、日志
 browser_adapter.py   Chrome/Playwright 适配：采集、沟通、聊天探测
 public/              前端（原生 HTML/CSS/JS，无构建步骤）
 tests/               pytest：规则、队列、API、风控、公司去重
-tools/               开发与排查脚本（审计、截图、探针、批量分析）
+branch/              「公司找人」分支：公司池 → 全部在招岗位 → 官网招聘页核验（只读，不投递）
+docs/                规则字段速查与状态机说明
+tools/               常驻脚本（watchdog / monitor / ensure_alive）与审计、截图、批量分析
 verify_ui.py         已启动服务下的 UI 冒烟（桌面 + 390px）
 verify_flow.py       隔离库 + 临时端口的端到端流程
 ```
@@ -149,7 +166,7 @@ verify_flow.py       隔离库 + 临时端口的端到端流程
 ## 9. 测试
 
 ```powershell
-python -m pytest -q      # 35 passed
+python -m pytest -q      # 70 passed（务必用装了 requirements 的那个解释器）
 python verify_ui.py      # 需要服务已启动
 python verify_flow.py    # 自起临时服务与隔离数据库，不碰真实数据
 ```
