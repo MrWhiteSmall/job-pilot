@@ -44,9 +44,16 @@ def spawn(module, window='Hidden'):
                      creationflags=0x00000008 | 0x00000200)
 
 
+def port_open(host='127.0.0.1', port=8765, timeout=1.5):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        return sock.connect_ex((host, port)) == 0
+
+
 def main():
     started = []
-    if not alive():
+    if not alive() and not port_open():
         spawn('app.py')
         started.append('app')
         time.sleep(10)

@@ -62,6 +62,16 @@ MASK_SCRIPT = """
 """
 
 
+READ_SAFE_CALLS = {'_status', '_collect', '_enrich', '_check_login', '_chat_preview'}
+CRASH_MARKERS = ('Aw, Snap', 'Out of Memory', 'Something went wrong while displaying this webpage',
+                 'STATUS_BREAKPOINT', 'Renderer process crashed', 'Target crashed')
+
+
+def _renderer_crashed(exc):
+    text = str(exc)
+    return any(marker in text for marker in CRASH_MARKERS)
+
+
 class BossBrowser:
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='boss-browser')
@@ -103,11 +113,16 @@ class BossBrowser:
             try:
                 return self.executor.submit(fn, *args).result()
             except Exception as exc:
-                if 'asyncio loop' not in str(exc):
-                    raise
-                print('[browser] worker thread wedged in an asyncio loop; replacing thread', flush=True)
-                self._reset_thread()
-                return self.executor.submit(fn, *args).result()
+                if 'asyncio loop' in str(exc):
+                    print('[browser] worker thread wedged in an asyncio loop; replacing thread', flush=True)
+                    self._reset_thread()
+                    return self.executor.submit(fn, *args).result()
+                if _renderer_crashed(exc) and getattr(fn, '__name__', '') in READ_SAFE_CALLS:
+                    print(f'[browser] {self.busy_name} hit a dead renderer; restarting Chrome and retrying once', flush=True)
+                    self.kill_chrome()
+                    self._reset_thread()
+                    return self.executor.submit(fn, *args).result()
+                raise
         finally:
             self.busy_since = None
             self.busy_name = ''
@@ -352,6 +367,8 @@ class BossBrowser:
             # A tab replaced or closed by the site yields no readable body; callers treat
             # an empty body as "not verified" and move on instead of crashing the queue.
             return ''
+        if any(marker in text for marker in CRASH_MARKERS):
+            raise RuntimeError('页面渲染进程崩溃（Out of Memory），需要重建浏览器窗口。')
         if any(x in text for x in ['访问异常', '安全验证', '请完成验证', '滑动验证', '行为验证', '您的访问行为异常']):
             raise RuntimeError('BOSS 要求安全验证，请到浏览器手动完成，程序不会绕过验证。')
         if '扫码登录' in text or ('登录/注册' in text and '消息' not in text and '简历' not in text):
@@ -648,8 +665,8 @@ class BossBrowser:
     def _new_page(self):
         page = self._context().new_page()
         self._opened.append(page)
-        if len(self._opened) > 12:
-            self._sweep(keep=2)
+        if len(self._opened) > 4:
+            self._sweep(keep=1)
         return page
 
     def _goto(self, page, url, attempts=2, timeout=25000):

@@ -667,7 +667,18 @@ def run():
     return result(run_once())
 
 
+def _port_in_use(host, port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.5)
+        return sock.connect_ex((host, port)) == 0
+
+
 if __name__ == '__main__':
-    start_worker()
-    start_supervisor()
-    app.run(host='127.0.0.1', port=int(os.getenv('JOB_PILOT_PORT', '8765')), debug=False, use_reloader=False)
+    _port = int(os.getenv('JOB_PILOT_PORT', '8765'))
+    if _port_in_use('127.0.0.1', _port):
+        print(f'[app] port {_port} already serving; another instance is running, exiting.')
+    else:
+        start_worker()
+        start_supervisor()
+        app.run(host='127.0.0.1', port=_port, debug=False, use_reloader=False)
