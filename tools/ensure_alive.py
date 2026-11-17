@@ -6,6 +6,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+NO_WINDOW = 0x08000000 if __import__('os').name == 'nt' else 0
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG = ROOT / 'data' / 'ensure.log'
@@ -31,7 +32,7 @@ def pids_of(script_name):
               "Where-Object { $_.CommandLine -like '*%s*' } | "
               "Select-Object -ExpandProperty ProcessId") % script_name
     out = subprocess.run(['powershell', '-NoProfile', '-Command', script],
-                         capture_output=True, text=True, timeout=30).stdout
+                         capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW).stdout
     return [int(x) for x in out.split() if x.strip().isdigit()]
 
 

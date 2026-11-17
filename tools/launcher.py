@@ -11,6 +11,8 @@ import os
 import shutil
 import subprocess
 import sys
+
+NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
 import time
 import urllib.error
 import urllib.request
@@ -216,7 +218,7 @@ def stop():
     pids = find_pids()
     if pids:
         for pid in pids:
-            subprocess.run(['taskkill', '/PID', str(pid), '/F'], capture_output=True, text=True)
+            subprocess.run(['taskkill', '/PID', str(pid), '/F'], capture_output=True, text=True, creationflags=NO_WINDOW)
         say(f'√ 已结束进程：{", ".join(map(str, pids))}')
     else:
         say('· 没有找到运行中的进程')

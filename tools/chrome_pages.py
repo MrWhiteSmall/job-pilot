@@ -2,13 +2,14 @@ import json
 import re
 import subprocess
 import urllib.request
+NO_WINDOW = 0x08000000 if __import__('os').name == 'nt' else 0
 
 PROFILE = 'D:\\DesktopCode\\job-pilot\\data\\boss-chrome-profile'
 ps = (
     "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
     "Select-Object -ExpandProperty CommandLine"
 )
-out = subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True, text=True).stdout
+out = subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True, text=True, creationflags=NO_WINDOW).stdout
 ports = set()
 for line in out.splitlines():
     if PROFILE.lower() in line.lower() and '--type=' not in line:

@@ -325,6 +325,14 @@ class JobEngine:
             raise ValidationError('CSV 需要 title 字段')
         return self.import_jobs(list(reader))
 
+    def _job_from_row(self, row, draft=None, attempt=None):
+        job = self._json(row['data'])
+        job.update({k: row[k] for k in ('id', 'score', 'reason', 'status')})
+        job.update(self._json(row['analysis']))
+        job.update(draft=draft['text'] if draft else '', approved=bool(draft['approved']) if draft else False,
+                   attempt=dict(attempt) if attempt else None)
+        return job
+
     def _job(self, jid):
         row = self._one('SELECT * FROM jobs WHERE id=?', (jid,))
         if not row:
@@ -687,8 +695,15 @@ class JobEngine:
             db.execute('INSERT INTO logs(job_id,event,detail,created_at) VALUES(?,?,?,?)', (jid, event, str(detail)[:3000], now()))
 
     def state(self):
+        # One connection, three queries: the old per-job lookups opened thousands of
+        # connections and made /api/state take ~90 seconds once the table grew.
         with self._connect() as db:
-            jobs = [self._job(r[0]) for r in db.execute('SELECT id FROM jobs ORDER BY id DESC')]
+            rows = db.execute('SELECT * FROM jobs ORDER BY id DESC').fetchall()
+            drafts = {r['job_id']: r for r in db.execute('SELECT job_id,text,approved FROM drafts')}
+            attempts = {}
+            for r in db.execute('SELECT job_id,mode,outcome,detail,created_at FROM attempts ORDER BY id'):
+                attempts[r['job_id']] = r
+            jobs = [self._job_from_row(row, drafts.get(row['id']), attempts.get(row['id'])) for row in rows]
             logs = [dict(r) for r in db.execute('SELECT * FROM logs ORDER BY id DESC LIMIT 200')]
         cfg = self.get_automation()
         alerts = [row for row in logs if row['event'] in ('alert', 'login_required')][:3]

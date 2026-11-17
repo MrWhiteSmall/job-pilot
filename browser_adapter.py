@@ -62,6 +62,7 @@ MASK_SCRIPT = """
 """
 
 
+NO_WINDOW = 0x08000000 if __import__('os').name == 'nt' else 0
 READ_SAFE_CALLS = {'_status', '_collect', '_enrich', '_check_login', '_chat_preview'}
 CRASH_MARKERS = ('Aw, Snap', 'Out of Memory', 'Something went wrong while displaying this webpage',
                  'STATUS_BREAKPOINT', 'Renderer process crashed', 'Target crashed')
@@ -191,7 +192,7 @@ class BossBrowser:
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
         try:
-            subprocess.run(['powershell', '-NoProfile', '-Command', script],
+            subprocess.run(['powershell', '-NoProfile', '-Command', script], creationflags=NO_WINDOW,
                            capture_output=True, timeout=60)
         except Exception:
             pass
@@ -259,7 +260,7 @@ class BossBrowser:
         try:
             proc = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
                                   capture_output=True, text=True, timeout=15,
-                                  creationflags=0x08000000)
+                                  creationflags=NO_WINDOW)
         except Exception:
             return None
         match = re.search(r'--remote-debugging-port=(\d+)', proc.stdout or '')
