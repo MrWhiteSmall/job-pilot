@@ -184,7 +184,7 @@ def find_pids():
               "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress")
     try:
         out = subprocess.run(['powershell', '-NoProfile', '-Command', script],
-                             capture_output=True, text=True, timeout=60).stdout.strip()
+                             capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW).stdout.strip()
     except Exception:
         return []
     if not out:
