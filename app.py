@@ -183,8 +183,18 @@ def automation():
         except Exception as exc:
             probe = {'logged_in': False, 'challenge': False, 'reason': f'无法确认登录状态：{exc}'[:200]}
         if not probe.get('logged_in'):
+            # Do not just refuse: pop the QR window so the user can scan right away.
+            opened = False
+            try:
+                _browser().login()
+                opened = True
+            except Exception as exc:
+                engine.log('login_open_failed', f'无法打开登录窗口：{exc}'[:200], None)
             engine.log('login_required', probe.get('reason') or '未登录', None)
-            return jsonify({'error': probe.get('reason') or '未检测到 BOSS 登录态，请先扫码登录', 'login': probe}), 409
+            reason = probe.get('reason') or '未检测到 BOSS 登录态'
+            if opened:
+                reason += '；已为你打开登录窗口，请扫码登录（或完成验证）后，再点一次「立即开始」'
+            return jsonify({'error': reason, 'login': probe, 'login_opened': opened}), 409
     return result(engine.set_automation(data))
 
 
@@ -581,7 +591,16 @@ def run_once():
         if outcome['status'] == 'blocked' and any(word in outcome.get('message', '') for word in ('上限', '已满', '用完', '明日再来', '明天再来', '登录', '验证', '安全')):
             # Only platform-level stops (quota, login, captcha) halt the queue.
             engine.set_automation({'enabled': False})
-            notify_user(f"托管已暂停：{outcome.get('message', '')}。处理完成后点「立即开始」继续。")
+            message = outcome.get('message', '')
+            if any(word in message for word in ('登录', '扫码', '验证', '安全')):
+                # Login or captcha: bring the QR/challenge page to the front instead of
+                # leaving the user with a paused queue and no obvious next step.
+                try:
+                    _browser().login()
+                    engine.log('login_opened', '已自动打开登录/验证窗口，处理后点「立即开始」', item['id'])
+                except Exception as exc:
+                    engine.log('login_open_failed', f'无法打开登录窗口：{exc}'[:200], item['id'])
+            notify_user(f"托管已暂停：{message}。处理完成后点「立即开始」继续。")
         elif outcome['status'] == 'uncertain':
             engine.log('watch', '本条结果待核对，队列继续运行', item['id'])
         return {'status': 'done', 'processed': 1, 'outcomes': [{'job_id': item['id'], **outcome}]}

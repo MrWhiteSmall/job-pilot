@@ -74,3 +74,50 @@ def test_enabling_live_requires_a_logged_in_session(tmp_path, monkeypatch):
     response = client.post('/api/automation', json={'enabled': True, 'mode': 'live'})
     assert response.status_code == 200
     assert engine.get_automation()['enabled'] is True
+
+
+def test_logged_out_enable_opens_login_window(tmp_path, monkeypatch):
+    engine = JobEngine(str(tmp_path / 'login-open.sqlite'))
+    monkeypatch.setattr(app, 'engine', engine)
+    calls = []
+
+    class LoggedOut:
+        def check_login(self):
+            return {'logged_in': False, 'challenge': False,
+                    'reason': '无法确认登录状态：Page.goto: Timeout 30000ms exceeded'}
+
+        def login(self):
+            calls.append('login')
+            return {'status': 'opened', 'message': '已打开登录窗口'}
+
+    monkeypatch.setattr(app, '_browser', lambda: LoggedOut())
+    client = app.app.test_client()
+    response = client.post('/api/automation', json={'enabled': True, 'mode': 'live'})
+    body = response.get_json()
+
+    assert response.status_code == 409
+    assert calls == ['login']
+    assert body['login_opened'] is True
+    assert '已为你打开登录窗口' in body['error']
+    assert engine.get_automation()['enabled'] is False
+
+
+def test_login_window_failure_still_reports_reason(tmp_path, monkeypatch):
+    engine = JobEngine(str(tmp_path / 'login-fail.sqlite'))
+    monkeypatch.setattr(app, 'engine', engine)
+
+    class Broken:
+        def check_login(self):
+            return {'logged_in': False, 'challenge': False, 'reason': '未检测到登录态'}
+
+        def login(self):
+            raise RuntimeError('Chrome 未安装')
+
+    monkeypatch.setattr(app, '_browser', lambda: Broken())
+    client = app.app.test_client()
+    response = client.post('/api/automation', json={'enabled': True, 'mode': 'live'})
+    body = response.get_json()
+
+    assert response.status_code == 409
+    assert body['login_opened'] is False
+    assert body['error'] == '未检测到登录态'
